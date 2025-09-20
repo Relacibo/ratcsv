@@ -1,26 +1,27 @@
 pub mod content;
 
-use std::path::PathBuf;
-
 use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Paragraph, Widget},
+    layout::{Constraint, Direction, Flex, Layout, Rect},
+    style::{Color, Stylize},
+    widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
+use std::{borrow::Cow, path::PathBuf};
 
 use crate::content::{CellLocation, CsvTable};
 
+const POPUP_WIDTH_PERCENT: u16 = 30;
+const POPUP_HEIGHT_PERCENT: u16 = 30;
+
 fn main() -> color_eyre::Result<()> {
+    let args = Args::parse();
     color_eyre::install()?;
     let terminal = ratatui::init();
-
-    let args = Args::parse();
-    let app = App::new();
-    let result = app.run(terminal, args);
+    let result = App::new().run(terminal, args);
     ratatui::restore();
     result
 }
@@ -32,6 +33,7 @@ struct App {
     running: bool,
     input_state: InputState,
     csv_table: Option<CsvTable>,
+    pop_up: Option<Popup>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 enum InputState {
@@ -54,7 +56,12 @@ impl App {
     /// Run the application's main loop.
     fn run(mut self, mut terminal: DefaultTerminal, args: Args) -> Result<()> {
         self.running = true;
-        self.try_load_table(args.file)?;
+        if let Some(file) = args.file {
+            let res = self.try_load_table(file);
+            if let Err(err) = res {
+                self.pop_up = Some(Popup::error(format!("{err}")));
+            }
+        }
         while self.running {
             terminal.draw(|frame| self.render(frame))?;
             self.handle_crossterm_events()?;
@@ -69,12 +76,10 @@ impl App {
     /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
     /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
     fn render(&mut self, frame: &mut Frame) {
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(98), Constraint::Max(2)])
-            .split(frame.area());
-
-        frame.render_widget(Block::new(), layout[0]);
+        let [main_area, console_bar] =
+            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Max(2)])
+                .areas(frame.area());
+        frame.render_widget(Block::new(), main_area);
 
         frame.render_widget(
             Grid {
@@ -85,8 +90,11 @@ impl App {
                 top_left_cell_location: CellLocation { row: 0, col: 0 },
                 csv_table: self.csv_table.as_ref(),
             },
-            layout[0],
+            main_area,
         );
+        if let Some(popup) = &self.pop_up {
+            frame.render_widget(popup, frame.area());
+        }
     }
 
     /// Reads the crossterm events and updates the state of [`App`].
@@ -110,21 +118,21 @@ impl App {
         match (key.modifiers, key.code) {
             (_, KeyCode::Char('q')) => self.quit(),
             (_, KeyCode::Char(':')) => self.input_state = InputState::Console,
-            (_, KeyCode::Esc) => self.input_state = InputState::Normal,
+            (_, KeyCode::Esc) => {
+                if self.pop_up.is_some() {
+                    self.pop_up = None;
+                } else {
+                    self.input_state = InputState::Normal;
+                }
+            }
             (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
                 if let Some(csv_table) = &mut self.csv_table {
                     csv_table
                         .normalize_and_save()
-                        .inspect_err(|err| eprintln!("{err}"))
+                        .inspect_err(|err| self.pop_up = Some(Popup::error(format!("{err}"))))
                         .ok();
                 }
             }
-            (_, KeyCode::Char('j')) => {
-                if let Some(csv_table) = &mut self.csv_table {
-                    csv_table.set(CellLocation { row: 3, col: 3 }, Some("E".to_owned()))
-                }
-            }
-            // Add other key handlers here.
             _ => {}
         }
     }
@@ -177,8 +185,83 @@ impl<'a> Widget for Grid<'a> {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Popup {
+    severity: Severity,
+    message: Cow<'static, str>,
+}
+
+impl Popup {
+    #[allow(unused)]
+    pub(crate) fn new(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            ..Default::default()
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn error(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            severity: Severity::Error,
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn warning(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            severity: Severity::Warning,
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn success(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            severity: Severity::Success,
+        }
+    }
+}
+
+impl Widget for &Popup {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let vertical =
+            Layout::vertical([Constraint::Percentage(POPUP_HEIGHT_PERCENT)]).flex(Flex::Center);
+        let horizontal =
+            Layout::horizontal([Constraint::Percentage(POPUP_WIDTH_PERCENT)]).flex(Flex::Center);
+        let [area] = vertical.areas(area);
+        let [area] = horizontal.areas(area);
+        let bg = match self.severity {
+            Severity::Neutral => Color::DarkGray,
+            Severity::Success => Color::Green,
+            Severity::Warning => Color::Yellow,
+            Severity::Error => Color::Red,
+        };
+        let block = Block::bordered().bg(bg);
+        let paragraph = Paragraph::new(self.message.clone())
+            .fg(Color::White)
+            .block(block);
+        Clear.render(area, buf);
+        paragraph.render(area, buf);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum Severity {
+    #[default]
+    Neutral,
+    Success,
+    Warning,
+    Error,
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg()]
-    file: PathBuf,
+    file: Option<PathBuf>,
 }
