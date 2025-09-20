@@ -43,6 +43,7 @@ struct Selection {
 #[derive(Debug, Clone)]
 struct Yank {
     selection: Selection,
+    content: Vec<Vec<Option<String>>>,
     mode: YankMode,
 }
 
@@ -163,29 +164,40 @@ impl App {
                     })
                 }
                 (_, KeyCode::Char('y')) => {
+                    // TODO: implement for rectangle selections
+                    let content = self
+                        .csv_table
+                        .as_ref()
+                        .and_then(|t| t.get(self.selection.primary).map(ToOwned::to_owned));
+                    let content = vec![vec![content]];
                     self.yank = Some(Yank {
                         selection: self.selection.clone(),
+                        content,
                         mode: YankMode::Yank,
                     })
                 }
                 (_, KeyCode::Char('d')) => {
+                    // TODO: implement for rectangle selections
+                    let content = self
+                        .csv_table
+                        .as_ref()
+                        .and_then(|t| t.get(self.selection.primary).map(ToOwned::to_owned));
+                    let content = vec![vec![content]];
                     self.yank = Some(Yank {
                         selection: self.selection.clone(),
+                        content,
                         mode: YankMode::Cut,
-                    })
+                    });
+                    if let Some(table) = &mut self.csv_table {
+                        table.set(self.selection.primary, None);
+                    }
                 }
                 (_, KeyCode::Char('p')) => {
-                    if let Some(Yank {
-                        selection: yank_selection,
-                        mode,
-                    }) = &self.yank
+                    // TODO: implement for rectangle selections
+                    if let Some(Yank { content, .. }) = &mut self.yank
                         && let Some(table) = &mut self.csv_table
                     {
-                        let yanked = table.get(yank_selection.primary);
-                        table.set(self.selection.primary, yanked.map(ToOwned::to_owned));
-                        if *mode == YankMode::Cut {
-                            table.set(yank_selection.primary, None);
-                        }
+                        table.set(self.selection.primary, content[0][0].take());
                         self.yank = None;
                     }
                 }
@@ -334,14 +346,15 @@ impl<'a> Widget for Grid<'a> {
                 Color::LightBlue
             } else if selected.contains(&cell_location) {
                 Color::Blue
-            } else if let Some(Yank { selection, mode }) = &yank
+            } else if let Some(Yank {
+                selection,
+                mode: YankMode::Yank,
+                ..
+            }) = &yank
                 && (selection.primary == cell_location
                     || selection.selected.contains(&cell_location))
             {
-                match mode {
-                    YankMode::Yank => Color::Green,
-                    YankMode::Cut => Color::Red,
-                }
+                Color::Green
             } else {
                 Color::Reset
             };
