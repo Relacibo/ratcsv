@@ -33,7 +33,7 @@ impl CsvTable {
         self.rows.get(location.row)?.get(location.col)?.as_deref()
     }
 
-    pub(crate) fn set(&mut self, location: CellLocation, value: String) {
+    pub(crate) fn set(&mut self, location: CellLocation, value: Option<String>) {
         let CellLocation { row, col } = location;
         // Ensure, that columns and rows exist
         if self.rows.len() <= row {
@@ -46,7 +46,7 @@ impl CsvTable {
             row.resize(col + 1, None);
         }
 
-        let value = (!value.is_empty()).then_some(value);
+        let value = value.filter(|value| !value.is_empty());
 
         // We can just set the cell, because we ensured, that it exists
         row[col] = value;

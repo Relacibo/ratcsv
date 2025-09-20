@@ -32,11 +32,24 @@ struct App {
     csv_table: Option<CsvTable>,
     console_message: Option<ConsoleMessage>,
     selection: Selection,
+    yank: Option<Yank>,
 }
 #[derive(Debug, Clone, Default)]
 struct Selection {
     selected: Vec<CellLocation>,
     primary: CellLocation,
+}
+
+#[derive(Debug, Clone)]
+struct Yank {
+    selection: Selection,
+    mode: YankMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YankMode {
+    Yank,
+    Cut,
 }
 
 impl App {
@@ -89,6 +102,7 @@ impl App {
                 top_left_cell_location: CellLocation { row: 0, col: 0 },
                 csv_table: self.csv_table.as_ref(),
                 selection: &self.selection,
+                yank: &self.yank,
             },
             main_area,
         );
@@ -148,6 +162,33 @@ impl App {
                         content: Default::default(),
                     })
                 }
+                (_, KeyCode::Char('y')) => {
+                    self.yank = Some(Yank {
+                        selection: self.selection.clone(),
+                        mode: YankMode::Yank,
+                    })
+                }
+                (_, KeyCode::Char('d')) => {
+                    self.yank = Some(Yank {
+                        selection: self.selection.clone(),
+                        mode: YankMode::Cut,
+                    })
+                }
+                (_, KeyCode::Char('p')) => {
+                    if let Some(Yank {
+                        selection: yank_selection,
+                        mode,
+                    }) = &self.yank
+                        && let Some(table) = &mut self.csv_table
+                    {
+                        let yanked = table.get(yank_selection.primary);
+                        table.set(self.selection.primary, yanked.map(ToOwned::to_owned));
+                        if *mode == YankMode::Cut {
+                            table.set(yank_selection.primary, None);
+                        }
+                        self.yank = None;
+                    }
+                }
                 (_, KeyCode::Char(':')) => {
                     self.input_state = InputState::Console(Console {
                         mode: ConsoleBarMode::Console,
@@ -165,7 +206,7 @@ impl App {
                         }
                         ConsoleBarMode::CellInput => {
                             if let Some(table) = &mut self.csv_table {
-                                table.set(self.selection.primary, content);
+                                table.set(self.selection.primary, Some(content));
                             }
                         }
                     }
@@ -250,6 +291,7 @@ struct Grid<'a> {
     top_left_cell_location: CellLocation,
     csv_table: Option<&'a CsvTable>,
     selection: &'a Selection,
+    yank: &'a Option<Yank>,
 }
 
 /// https://ratatui.rs/recipes/layout/grid/
@@ -263,6 +305,7 @@ impl<'a> Widget for Grid<'a> {
             top_left_cell_location,
             csv_table,
             selection,
+            yank,
         } = self;
         let Selection { selected, primary } = selection;
         let col_constraints = (0..cols).map(|_| Constraint::Length(cell_width));
@@ -291,6 +334,14 @@ impl<'a> Widget for Grid<'a> {
                 Color::LightBlue
             } else if selected.contains(&cell_location) {
                 Color::Blue
+            } else if let Some(Yank { selection, mode }) = &yank
+                && (selection.primary == cell_location
+                    || selection.selected.contains(&cell_location))
+            {
+                match mode {
+                    YankMode::Yank => Color::Green,
+                    YankMode::Cut => Color::Red,
+                }
             } else {
                 Color::Reset
             };
