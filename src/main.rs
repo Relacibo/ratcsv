@@ -6,16 +6,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    layout::{Constraint, Direction, Flex, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Stylize},
-    widgets::{Block, Clear, Paragraph, Widget, Wrap},
+    widgets::{Block, Paragraph, Widget},
 };
 use std::{borrow::Cow, path::PathBuf};
 
-use crate::content::{CellLocation, CsvTable};
-
-const POPUP_WIDTH_PERCENT: u16 = 30;
-const POPUP_HEIGHT_PERCENT: u16 = 30;
+use crate::content::{CellLocation, CellLocationDelta, CsvTable};
 
 fn main() -> color_eyre::Result<()> {
     let args = Args::parse();
@@ -33,13 +30,13 @@ struct App {
     running: bool,
     input_state: InputState,
     csv_table: Option<CsvTable>,
-    pop_up: Option<Popup>,
+    console_message: Option<ConsoleMessage>,
+    selection: Selection,
 }
-#[derive(Clone, Copy, Debug, Default)]
-enum InputState {
-    #[default]
-    Normal,
-    Console,
+#[derive(Debug, Clone, Default)]
+struct Selection {
+    selected: Vec<CellLocation>,
+    primary: CellLocation,
 }
 
 impl App {
@@ -59,12 +56,14 @@ impl App {
         if let Some(file) = args.file {
             let res = self.try_load_table(file);
             if let Err(err) = res {
-                self.pop_up = Some(Popup::error(format!("{err}")));
+                self.console_message = Some(ConsoleMessage::error(format!("{err}")));
             }
         }
         while self.running {
             terminal.draw(|frame| self.render(frame))?;
-            self.handle_crossterm_events()?;
+            if let Err(err) = self.handle_crossterm_events() {
+                self.console_message = Some(ConsoleMessage::error(format!("{err}")));
+            };
         }
         Ok(())
     }
@@ -89,11 +88,15 @@ impl App {
                 cell_width: 15,
                 top_left_cell_location: CellLocation { row: 0, col: 0 },
                 csv_table: self.csv_table.as_ref(),
+                selection: &self.selection,
             },
             main_area,
         );
-        if let Some(popup) = &self.pop_up {
-            frame.render_widget(popup, frame.area());
+
+        if let InputState::Console(console) = &self.input_state {
+            frame.render_widget(console, console_bar);
+        } else if let Some(console_message) = &self.console_message {
+            frame.render_widget(console_message, console_bar);
         }
     }
 
@@ -104,7 +107,7 @@ impl App {
     fn handle_crossterm_events(&mut self) -> Result<()> {
         match event::read()? {
             // it's important to check KeyEventKind::Press to avoid handling key release events
-            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key),
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key)?,
             Event::Mouse(_) => {}
             Event::Resize(_, _) => {}
             _ => {}
@@ -113,28 +116,124 @@ impl App {
     }
 
     /// Handles the key events and updates the state of [`App`].
-    fn on_key_event(&mut self, key: KeyEvent) {
-        #[allow(clippy::single_match)]
-        match (key.modifiers, key.code) {
-            (_, KeyCode::Char('q')) => self.quit(),
-            (_, KeyCode::Char(':')) => self.input_state = InputState::Console,
-            (_, KeyCode::Esc) => {
-                if self.pop_up.is_some() {
-                    self.pop_up = None;
-                } else {
+    fn on_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        self.console_message = None;
+        if let (_, KeyCode::Esc) = (key.modifiers, key.code) {
+            if self.console_message.is_some() {
+                self.console_message = None;
+            } else {
+                self.input_state = InputState::Normal;
+            }
+        }
+        match &mut self.input_state {
+            InputState::Normal => match (key.modifiers, key.code) {
+                (_, KeyCode::Char('h')) => self.move_selection(MoveDirection::Left),
+                (_, KeyCode::Char('j')) => self.move_selection(MoveDirection::Down),
+                (_, KeyCode::Char('k')) => self.move_selection(MoveDirection::Up),
+                (_, KeyCode::Char('l')) => self.move_selection(MoveDirection::Right),
+                (_, KeyCode::Char('i')) => {
+                    let content = if let Some(table) = &self.csv_table {
+                        table.get(self.selection.primary).unwrap_or_default()
+                    } else {
+                        Default::default()
+                    };
+                    self.input_state = InputState::Console(Console {
+                        mode: ConsoleBarMode::CellInput,
+                        content: content.to_owned(),
+                    })
+                }
+                (_, KeyCode::Char('c')) => {
+                    self.input_state = InputState::Console(Console {
+                        mode: ConsoleBarMode::CellInput,
+                        content: Default::default(),
+                    })
+                }
+                (_, KeyCode::Char(':')) => {
+                    self.input_state = InputState::Console(Console {
+                        mode: ConsoleBarMode::Console,
+                        content: String::default(),
+                    })
+                }
+                _ => {}
+            },
+            InputState::Console(Console { content, mode }) => match (key.modifiers, key.code) {
+                (_, KeyCode::Enter) => {
+                    let content = content.clone();
+                    match mode {
+                        ConsoleBarMode::Console => {
+                            self.try_execute_command(&content)?;
+                        }
+                        ConsoleBarMode::CellInput => {
+                            if let Some(table) = &mut self.csv_table {
+                                table.set(self.selection.primary, content);
+                            }
+                        }
+                    }
+
                     self.input_state = InputState::Normal;
                 }
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
-                if let Some(csv_table) = &mut self.csv_table {
-                    csv_table
-                        .normalize_and_save()
-                        .inspect_err(|err| self.pop_up = Some(Popup::error(format!("{err}"))))
-                        .ok();
+                (m, KeyCode::Char(c)) => {
+                    let c = if m == KeyModifiers::SHIFT {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    };
+                    content.push(c);
                 }
+                (_, KeyCode::Backspace) => {
+                    content.pop();
+                }
+                _ => {}
+            },
+        }
+        Ok(())
+    }
+
+    fn move_selection(&mut self, direction: MoveDirection) {
+        let delta = match direction {
+            MoveDirection::Left => CellLocationDelta { x: -1, y: 0 },
+            MoveDirection::Down => CellLocationDelta { x: 0, y: 1 },
+            MoveDirection::Up => CellLocationDelta { x: 0, y: -1 },
+            MoveDirection::Right => CellLocationDelta { x: 1, y: 0 },
+        };
+        self.selection.primary = self.selection.primary + delta;
+    }
+
+    fn try_execute_command(&mut self, command: &str) -> Result<()> {
+        match command.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["w" | "write", ..] => {
+                if let Some(csv_table) = &mut self.csv_table {
+                    csv_table.normalize_and_save()?;
+                };
+            }
+            ["q!" | "quit!", ..] => {
+                self.quit();
+            }
+            ["wq" | "x" | "write-quit" | "wq!" | "x!" | "write-quit!", ..] => {
+                if let Some(csv_table) = &mut self.csv_table {
+                    csv_table.normalize_and_save()?;
+                };
+                self.quit();
+            }
+            ["q" | "quit", ..] => {
+                self.console_message = Some(ConsoleMessage::error(
+                    "`quit` is not implemented - Use `quit!`",
+                ))
+            }
+            ["o" | "open", file, ..] => {
+                if let Err(err) = self.try_load_table(PathBuf::from(file)) {
+                    self.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                }
+            }
+            ["bc!" | "buffer-close!", ..] => {
+                self.csv_table = None;
+            }
+            [c, ..] => {
+                self.console_message = Some(ConsoleMessage::error(format!("Unknown command: {c}")));
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Set running to false to quit the application.
@@ -150,13 +249,24 @@ struct Grid<'a> {
     cell_width: u16,
     top_left_cell_location: CellLocation,
     csv_table: Option<&'a CsvTable>,
+    selection: &'a Selection,
 }
 
 /// https://ratatui.rs/recipes/layout/grid/
 impl<'a> Widget for Grid<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let col_constraints = (0..self.cols).map(|_| Constraint::Length(self.cell_width));
-        let row_constraints = (0..self.rows).map(|_| Constraint::Length(self.cell_height));
+        let Grid {
+            cols,
+            rows,
+            cell_height,
+            cell_width,
+            top_left_cell_location,
+            csv_table,
+            selection,
+        } = self;
+        let Selection { selected, primary } = selection;
+        let col_constraints = (0..cols).map(|_| Constraint::Length(cell_width));
+        let row_constraints = (0..rows).map(|_| Constraint::Length(cell_height));
         let horizontal = Layout::horizontal(col_constraints).spacing(0);
         let vertical = Layout::vertical(row_constraints).spacing(0);
 
@@ -169,16 +279,23 @@ impl<'a> Widget for Grid<'a> {
         //     .flat_map(|row| row.layout_vec(&horizontal));
 
         for (i, cell) in cells.enumerate() {
-            let text = if let Some(csv_table) = self.csv_table {
-                let row = i / self.cols;
-                let col = i % self.cols;
-                csv_table
-                    .get(self.top_left_cell_location + CellLocation { row, col })
-                    .unwrap_or_default()
+            let row = i / cols;
+            let col = i % cols;
+            let cell_location = top_left_cell_location + CellLocation { row, col };
+            let text = if let Some(csv_table) = csv_table {
+                csv_table.get(cell_location).unwrap_or_default()
             } else {
                 Default::default()
             };
+            let fg = if *primary == cell_location {
+                Color::LightBlue
+            } else if selected.contains(&cell_location) {
+                Color::Blue
+            } else {
+                Color::Reset
+            };
             Paragraph::new(text)
+                .fg(fg)
                 .block(Block::bordered())
                 .render(cell, buf);
         }
@@ -186,12 +303,12 @@ impl<'a> Widget for Grid<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Popup {
+pub(crate) struct ConsoleMessage {
     severity: Severity,
     message: Cow<'static, str>,
 }
 
-impl Popup {
+impl ConsoleMessage {
     #[allow(unused)]
     pub(crate) fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -225,30 +342,55 @@ impl Popup {
     }
 }
 
-impl Widget for &Popup {
+impl Widget for &ConsoleMessage {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        let vertical =
-            Layout::vertical([Constraint::Percentage(POPUP_HEIGHT_PERCENT)]).flex(Flex::Center);
-        let horizontal =
-            Layout::horizontal([Constraint::Percentage(POPUP_WIDTH_PERCENT)]).flex(Flex::Center);
-        let [area] = vertical.areas(area);
-        let [area] = horizontal.areas(area);
-        let bg = match self.severity {
-            Severity::Neutral => Color::DarkGray,
-            Severity::Success => Color::Green,
-            Severity::Warning => Color::Yellow,
-            Severity::Error => Color::Red,
+        let ConsoleMessage { severity, message } = self;
+        let (prefix, color) = match *severity {
+            Severity::Error => ("! ", Color::Red),
+            _ => ("", Color::Reset),
         };
-        let block = Block::bordered().bg(bg);
-        let paragraph = Paragraph::new(self.message.clone())
-            .fg(Color::White)
-            .block(block);
-        Clear.render(area, buf);
+        let paragraph = Paragraph::new(format!("{prefix}{message}")).fg(color);
+
         paragraph.render(area, buf);
     }
+}
+
+#[derive(Clone, Debug)]
+struct Console {
+    mode: ConsoleBarMode,
+    content: String,
+}
+
+impl Widget for &Console {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let Console { mode, content } = self;
+        let prefix = match mode {
+            ConsoleBarMode::Console => ":",
+            ConsoleBarMode::CellInput => ">",
+        };
+        let paragraph = Paragraph::new(format!("{prefix}{content}"));
+        paragraph.render(area, buf);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+enum InputState {
+    #[default]
+    Normal,
+    Console(Console),
+}
+
+#[allow(unused)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleBarMode {
+    Console,
+    CellInput,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -264,4 +406,12 @@ enum Severity {
 struct Args {
     #[arg()]
     file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoveDirection {
+    Left,
+    Down,
+    Up,
+    Right,
 }
