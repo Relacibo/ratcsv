@@ -6,9 +6,13 @@
 - [ ] Maybe custom keybinds at some point
 - [ ] Custom styles
 - [x] Cells should stretch over whole area
-- [ ] Table should move with selection
+- [x] Table should move with selection
+- [ ] View mode (`z`)
+  - [x] `c`
+  - [ ] `Shift` + `j` or `t`, etc.
+  - [ ] `j`, etc.
 - [ ] Undo/Redo
 - [ ] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
-- [ ] Jump to labeled field with `g` `w`
+- [ ] Jump to labeled field with `g` ident `g`i (Identifier can be letters, a number or a combination)
 - [x] Special style for cells, that are both yanked and selected

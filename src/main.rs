@@ -15,6 +15,8 @@ use std::{borrow::Cow, path::PathBuf};
 
 use crate::content::{CellLocation, CellLocationDelta, CsvTable};
 
+const LOGO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/logo.txt"));
+
 fn main() -> color_eyre::Result<()> {
     let args = Args::parse();
     color_eyre::install()?;
@@ -53,6 +55,9 @@ impl App {
     /// Run the application's main loop.
     fn run(mut self, args: Args) -> Result<()> {
         self.state.running = true;
+        self.terminal
+            .draw(|frame| frame.render_widget(SplashScreen, frame.area()))?;
+
         if let Some(file) = args.file {
             let res = self.try_load_table(file);
             if let Err(err) = res {
@@ -114,7 +119,7 @@ impl App {
         };
         let table = self.state.table.as_mut().unwrap();
         match (key.modifiers, key.code, *combo) {
-            (_, KeyCode::Char('c'), Some(Combo::View)) => {
+            (_, KeyCode::Char('c' | 'z'), Some(Combo::View)) => {
                 table.center_primary_selection();
                 *combo = None;
             }
@@ -186,7 +191,7 @@ impl App {
                     table.selection_yanked = None;
                 }
             }
-            _ => {}
+            _ => *combo = None,
         }
         Ok(())
     }
@@ -301,6 +306,8 @@ impl AppState {
         if let Some(table) = &mut self.table {
             table.recalculate_dimensions(main_area.width, main_area.height);
             frame.render_widget(&*table, main_area);
+        } else {
+            frame.render_widget(SplashScreen, main_area);
         }
 
         if let InputState::Console(console) = &self.input {
@@ -596,6 +603,39 @@ impl Widget for &Console {
         };
         let paragraph = Paragraph::new(format!("{prefix}{content}"));
         paragraph.render(area, buf);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SplashScreen;
+
+impl Widget for SplashScreen {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let lines: Vec<&str> = LOGO.lines().collect();
+        let logo_height = lines.len() as u16;
+
+        // Vertikale Zentrierung
+        let start_y = if area.height > logo_height {
+            area.y + (area.height - logo_height) / 2
+        } else {
+            area.y
+        };
+
+        // Paragraph für das ganze Logo
+        let paragraph = Paragraph::new(LOGO).alignment(Alignment::Center);
+
+        // Paragraph rendern direkt auf Buffer
+        let logo_area = Rect {
+            x: area.x,
+            y: start_y,
+            width: area.width,
+            height: logo_height.min(area.height),
+        };
+
+        paragraph.render(logo_area, buf);
     }
 }
 
