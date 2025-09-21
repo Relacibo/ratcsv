@@ -3,12 +3,13 @@ use std::{
     path::PathBuf,
 };
 
+use color_eyre::eyre::eyre;
 use csv::{ReaderBuilder, Writer};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CsvTable {
     rows: Vec<Vec<Option<String>>>,
-    file: PathBuf,
+    file: Option<PathBuf>,
 }
 
 impl CsvTable {
@@ -26,7 +27,10 @@ impl CsvTable {
                     .collect(),
             );
         }
-        Ok(Self { file, rows })
+        Ok(Self {
+            file: Some(file),
+            rows,
+        })
     }
 
     pub(crate) fn get(&self, location: CellLocation) -> Option<&str> {
@@ -76,8 +80,11 @@ impl CsvTable {
     }
 
     pub(crate) fn normalize_and_save(&mut self) -> color_eyre::Result<()> {
+        let Some(file) = self.file.clone() else {
+            return Err(eyre!("There is no file to write to!"));
+        };
         self.normalize();
-        let mut wtr = Writer::from_path(&self.file)?;
+        let mut wtr = Writer::from_path(file)?;
 
         for row in &self.rows {
             let record: Vec<&str> = row

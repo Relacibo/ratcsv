@@ -7,7 +7,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Stylize},
+    style::{Color, Style, Stylize},
     widgets::{Block, Paragraph, Widget},
 };
 use std::{borrow::Cow, path::PathBuf};
@@ -24,33 +24,31 @@ fn main() -> color_eyre::Result<()> {
 }
 
 /// The main application which holds the state and logic of the application.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct App {
     /// Is the application running?
     running: bool,
     input_state: InputState,
-    csv_table: Option<CsvTable>,
     console_message: Option<ConsoleMessage>,
-    selection: Selection,
+    table: Option<CsvTableWidget>,
     yank: Option<Yank>,
 }
+
 #[derive(Debug, Clone, Default)]
 struct Selection {
     selected: Vec<CellLocation>,
     primary: CellLocation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Yank {
-    selection: Selection,
     content: Vec<Vec<Option<String>>>,
-    mode: YankMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum YankMode {
-    Yank,
-    Cut,
+impl Yank {
+    fn new(content: Vec<Vec<Option<String>>>) -> Self {
+        Self { content }
+    }
 }
 
 impl App {
@@ -60,7 +58,11 @@ impl App {
     }
 
     pub fn try_load_table(&mut self, file: PathBuf) -> color_eyre::Result<()> {
-        self.csv_table = Some(CsvTable::load_from_file(file)?);
+        let csv_table = CsvTable::load_from_file(file)?;
+        self.table = Some(CsvTableWidget {
+            csv_table,
+            ..Default::default()
+        });
         Ok(())
     }
 
@@ -93,20 +95,9 @@ impl App {
             Layout::vertical(vec![Constraint::Percentage(98), Constraint::Max(2)])
                 .areas(frame.area());
         frame.render_widget(Block::new(), main_area);
-
-        frame.render_widget(
-            Grid {
-                cols: 10,
-                rows: 10,
-                cell_height: 3,
-                cell_width: 15,
-                top_left_cell_location: CellLocation { row: 0, col: 0 },
-                csv_table: self.csv_table.as_ref(),
-                selection: &self.selection,
-                yank: &self.yank,
-            },
-            main_area,
-        );
+        if let Some(table) = &self.table {
+            frame.render_widget(table, main_area);
+        }
 
         if let InputState::Console(console) = &self.input_state {
             frame.render_widget(console, console_bar);
@@ -139,136 +130,162 @@ impl App {
             } else {
                 self.input_state = InputState::Normal;
             }
+            return Ok(());
         }
-        match &mut self.input_state {
+        match &self.input_state {
             InputState::Normal => match (key.modifiers, key.code) {
-                (_, KeyCode::Char('h')) => self.move_selection(MoveDirection::Left),
-                (_, KeyCode::Char('j')) => self.move_selection(MoveDirection::Down),
-                (_, KeyCode::Char('k')) => self.move_selection(MoveDirection::Up),
-                (_, KeyCode::Char('l')) => self.move_selection(MoveDirection::Right),
-                (_, KeyCode::Char('i')) => {
-                    let content = if let Some(table) = &self.csv_table {
-                        table.get(self.selection.primary).unwrap_or_default()
-                    } else {
-                        Default::default()
-                    };
-                    self.input_state = InputState::Console(Console {
-                        mode: ConsoleBarMode::CellInput,
-                        content: content.to_owned(),
-                    })
-                }
-                (_, KeyCode::Char('c')) => {
-                    self.input_state = InputState::Console(Console {
-                        mode: ConsoleBarMode::CellInput,
-                        content: Default::default(),
-                    })
-                }
-                (_, KeyCode::Char('y')) => {
-                    // TODO: implement for rectangle selections
-                    let content = self
-                        .csv_table
-                        .as_ref()
-                        .and_then(|t| t.get(self.selection.primary).map(ToOwned::to_owned));
-                    let content = vec![vec![content]];
-                    self.yank = Some(Yank {
-                        selection: self.selection.clone(),
-                        content,
-                        mode: YankMode::Yank,
-                    })
-                }
-                (_, KeyCode::Char('d')) => {
-                    // TODO: implement for rectangle selections
-                    let content = self
-                        .csv_table
-                        .as_ref()
-                        .and_then(|t| t.get(self.selection.primary).map(ToOwned::to_owned));
-                    let content = vec![vec![content]];
-                    self.yank = Some(Yank {
-                        selection: self.selection.clone(),
-                        content,
-                        mode: YankMode::Cut,
-                    });
-                    if let Some(table) = &mut self.csv_table {
-                        table.set(self.selection.primary, None);
-                    }
-                }
-                (_, KeyCode::Char('p')) => {
-                    // TODO: implement for rectangle selections
-                    if let Some(Yank { content, .. }) = &mut self.yank
-                        && let Some(table) = &mut self.csv_table
-                    {
-                        table.set(self.selection.primary, content[0][0].take());
-                        self.yank = None;
-                    }
-                }
                 (_, KeyCode::Char(':')) => {
                     self.input_state = InputState::Console(Console {
                         mode: ConsoleBarMode::Console,
                         content: String::default(),
                     })
                 }
+                _ if self.table.is_some() => self.handle_table_key_input(key)?,
                 _ => {}
             },
-            InputState::Console(Console { content, mode }) => match (key.modifiers, key.code) {
-                (_, KeyCode::Enter) => {
-                    let content = content.clone();
-                    match mode {
-                        ConsoleBarMode::Console => {
-                            self.try_execute_command(&content)?;
-                        }
-                        ConsoleBarMode::CellInput => {
-                            if let Some(table) = &mut self.csv_table {
-                                table.set(self.selection.primary, Some(content));
-                            }
-                        }
-                    }
-
-                    self.input_state = InputState::Normal;
-                }
-                (m, KeyCode::Char(c)) => {
-                    let c = if m == KeyModifiers::SHIFT {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    };
-                    content.push(c);
-                }
-                (_, KeyCode::Backspace) => {
-                    content.pop();
-                }
-                _ => {}
-            },
+            InputState::Console(_) => self.handle_console_input(key)?,
         }
         Ok(())
     }
 
-    fn move_selection(&mut self, direction: MoveDirection) {
-        let delta = match direction {
-            MoveDirection::Left => CellLocationDelta { x: -1, y: 0 },
-            MoveDirection::Down => CellLocationDelta { x: 0, y: 1 },
-            MoveDirection::Up => CellLocationDelta { x: 0, y: -1 },
-            MoveDirection::Right => CellLocationDelta { x: 1, y: 0 },
+    fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<()> {
+        let InputState::Normal = &mut self.input_state else {
+            unreachable!();
         };
-        self.selection.primary = self.selection.primary + delta;
+        let table = self.table.as_mut().unwrap();
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Char('H')) => {
+                table.selection.selected = Vec::new();
+                table.move_selection(MoveDirection::Left, table.visible_cols / 2);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('d')) | (_, KeyCode::Char('J')) => {
+                table.selection.selected = Vec::new();
+                table.move_selection(MoveDirection::Down, table.visible_rows / 2);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (_, KeyCode::Char('K')) => {
+                table.selection.selected = Vec::new();
+                table.move_selection(MoveDirection::Up, table.visible_rows / 2);
+            }
+            (_, KeyCode::Char('L')) => {
+                table.selection.selected = Vec::new();
+                table.move_selection(MoveDirection::Right, table.visible_cols / 2);
+            }
+            (_, KeyCode::Char('h')) => table.move_selection(MoveDirection::Left, 1),
+            (_, KeyCode::Char('j')) => table.move_selection(MoveDirection::Down, 1),
+            (_, KeyCode::Char('k')) => table.move_selection(MoveDirection::Up, 1),
+            (_, KeyCode::Char('l')) => table.move_selection(MoveDirection::Right, 1),
+            (_, KeyCode::Char('i')) => {
+                let content = table
+                    .csv_table
+                    .get(table.selection.primary)
+                    .unwrap_or_default();
+                self.input_state = InputState::Console(Console {
+                    mode: ConsoleBarMode::CellInput,
+                    content: content.to_owned(),
+                });
+            }
+            (_, KeyCode::Char('c')) => {
+                self.input_state = InputState::Console(Console {
+                    mode: ConsoleBarMode::CellInput,
+                    content: Default::default(),
+                })
+            }
+            (_, KeyCode::Char('y')) => {
+                // TODO: implement for rectangle selections
+                let content = table
+                    .csv_table
+                    .get(table.selection.primary)
+                    .map(ToOwned::to_owned);
+                let content = vec![vec![content]];
+                table.selection_yanked = Some(table.selection.clone());
+                self.yank = Some(Yank::new(content))
+            }
+            (_, KeyCode::Char('d')) => {
+                // TODO: implement for rectangle selections
+                let content = table
+                    .csv_table
+                    .get(table.selection.primary)
+                    .map(ToOwned::to_owned);
+                let content = vec![vec![content]];
+                table.csv_table.set(table.selection.primary, None);
+                self.yank = Some(Yank::new(content))
+            }
+            (_, KeyCode::Char('p')) => {
+                // TODO: implement for rectangle selections
+                if let Some(Yank { content, .. }) = &mut self.yank {
+                    table
+                        .csv_table
+                        .set(table.selection.primary, content[0][0].take());
+                    table.selection_yanked = None;
+                }
+            }
+            (_, KeyCode::Char(':')) => {
+                self.input_state = InputState::Console(Console {
+                    mode: ConsoleBarMode::Console,
+                    content: String::default(),
+                })
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_console_input(&mut self, key: KeyEvent) -> Result<()> {
+        let InputState::Console(Console { mode, content }) = &mut self.input_state else {
+            unreachable!();
+        };
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Enter) => {
+                let content = content.clone();
+                match mode {
+                    ConsoleBarMode::Console => {
+                        self.try_execute_command(&content)?;
+                    }
+                    ConsoleBarMode::CellInput => {
+                        if let Some(table) = &mut self.table {
+                            table.csv_table.set(table.selection.primary, Some(content));
+                        }
+                    }
+                }
+
+                self.input_state = InputState::Normal;
+            }
+            (m, KeyCode::Char(c)) => {
+                let c = if m == KeyModifiers::SHIFT {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                };
+                content.push(c);
+            }
+            (_, KeyCode::Backspace) => {
+                content.pop();
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn try_execute_command(&mut self, command: &str) -> Result<()> {
         match command.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["w" | "write", ..] => {
-                if let Some(csv_table) = &mut self.csv_table {
-                    csv_table.normalize_and_save()?;
+                if let Some(table) = &mut self.table {
+                    table.csv_table.normalize_and_save()?;
                 };
             }
             ["q!" | "quit!", ..] => {
                 self.quit();
             }
             ["wq" | "x" | "write-quit" | "wq!" | "x!" | "write-quit!", ..] => {
-                if let Some(csv_table) = &mut self.csv_table {
-                    csv_table.normalize_and_save()?;
+                if let Some(table) = &mut self.table {
+                    table.csv_table.normalize_and_save()?;
                 };
                 self.quit();
             }
             ["q" | "quit", ..] => {
+                if self.table.is_none() {
+                    self.quit();
+                }
                 self.console_message = Some(ConsoleMessage::error(
                     "`quit` is not implemented - Use `quit!`",
                 ))
@@ -278,8 +295,11 @@ impl App {
                     self.console_message = Some(ConsoleMessage::error(format!("{err}")));
                 }
             }
+            ["n" | "new", ..] => {
+                self.table = Some(CsvTableWidget::default());
+            }
             ["bc!" | "buffer-close!", ..] => {
-                self.csv_table = None;
+                self.table = None;
             }
             [c, ..] => {
                 self.console_message = Some(ConsoleMessage::error(format!("Unknown command: {c}")));
@@ -295,33 +315,101 @@ impl App {
     }
 }
 
-struct Grid<'a> {
-    cols: usize,
-    rows: usize,
+#[derive(Debug, Clone)]
+struct CsvTableWidgetStyle {
+    normal_00: Style,
+    normal_01: Style,
+    normal_10: Style,
+    normal_11: Style,
+    primary_selection: Style,
+    secondary_selection: Style,
+    yanked: Style,
+}
+
+impl Default for CsvTableWidgetStyle {
+    fn default() -> Self {
+        Self {
+            normal_00: Style::new().bg(Color::Rgb(57, 57, 57)).fg(Color::White),
+            normal_01: Style::new().bg(Color::Rgb(60, 60, 60)).fg(Color::White),
+            normal_10: Style::new().bg(Color::Rgb(67, 67, 67)).fg(Color::White),
+            normal_11: Style::new().bg(Color::Rgb(70, 70, 70)).fg(Color::White),
+            primary_selection: Style::new().bg(Color::LightBlue).fg(Color::Black),
+            secondary_selection: Style::new().bg(Color::Blue).fg(Color::Blue),
+            yanked: Style::new().bg(Color::Green).fg(Color::Black),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CsvTableWidget {
+    visible_cols: usize,
+    visible_rows: usize,
     cell_height: u16,
     cell_width: u16,
+    style: CsvTableWidgetStyle,
     top_left_cell_location: CellLocation,
-    csv_table: Option<&'a CsvTable>,
-    selection: &'a Selection,
-    yank: &'a Option<Yank>,
+    csv_table: CsvTable,
+    selection: Selection,
+    selection_yanked: Option<Selection>,
+}
+
+impl Default for CsvTableWidget {
+    fn default() -> Self {
+        Self {
+            visible_cols: 5,
+            visible_rows: 20,
+            cell_height: 1,
+            cell_width: 25,
+            style: Default::default(),
+            top_left_cell_location: Default::default(),
+            csv_table: Default::default(),
+            selection: Default::default(),
+            selection_yanked: Default::default(),
+        }
+    }
+}
+
+impl CsvTableWidget {
+    fn move_selection(&mut self, direction: MoveDirection, n: usize) {
+        let n = n as isize;
+        let delta = match direction {
+            MoveDirection::Left => CellLocationDelta { x: -n, y: 0 },
+            MoveDirection::Down => CellLocationDelta { x: 0, y: n },
+            MoveDirection::Up => CellLocationDelta { x: 0, y: -n },
+            MoveDirection::Right => CellLocationDelta { x: n, y: 0 },
+        };
+        self.selection.primary = self.selection.primary + delta;
+    }
 }
 
 /// https://ratatui.rs/recipes/layout/grid/
-impl<'a> Widget for Grid<'a> {
+impl Widget for &CsvTableWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let Grid {
-            cols,
-            rows,
+        let CsvTableWidget {
+            visible_cols: cols,
+            visible_rows: rows,
             cell_height,
             cell_width,
+            style,
             top_left_cell_location,
             csv_table,
             selection,
-            yank,
+            selection_yanked,
         } = self;
+
+        let CsvTableWidgetStyle {
+            normal_00,
+            normal_01,
+            normal_10,
+            normal_11,
+            primary_selection,
+            secondary_selection,
+            yanked,
+        } = style;
+
         let Selection { selected, primary } = selection;
-        let col_constraints = (0..cols).map(|_| Constraint::Length(cell_width));
-        let row_constraints = (0..rows).map(|_| Constraint::Length(cell_height));
+        let col_constraints = (0..*cols).map(|_| Constraint::Length(*cell_width));
+        let row_constraints = (0..*rows).map(|_| Constraint::Length(*cell_height));
         let horizontal = Layout::horizontal(col_constraints).spacing(0);
         let vertical = Layout::vertical(row_constraints).spacing(0);
 
@@ -336,32 +424,27 @@ impl<'a> Widget for Grid<'a> {
         for (i, cell) in cells.enumerate() {
             let row = i / cols;
             let col = i % cols;
-            let cell_location = top_left_cell_location + CellLocation { row, col };
-            let text = if let Some(csv_table) = csv_table {
-                csv_table.get(cell_location).unwrap_or_default()
-            } else {
-                Default::default()
-            };
-            let fg = if *primary == cell_location {
-                Color::LightBlue
+            let cell_location = *top_left_cell_location + CellLocation { row, col };
+            let text = csv_table.get(cell_location).unwrap_or_default();
+            let style = if *primary == cell_location {
+                primary_selection
             } else if selected.contains(&cell_location) {
-                Color::Blue
-            } else if let Some(Yank {
-                selection,
-                mode: YankMode::Yank,
-                ..
-            }) = &yank
+                secondary_selection
+            } else if let Some(selection) = &selection_yanked
                 && (selection.primary == cell_location
                     || selection.selected.contains(&cell_location))
             {
-                Color::Green
+                yanked
             } else {
-                Color::Reset
+                match (row % 2, col % 2) {
+                    (0, 0) => normal_00,
+                    (0, 1) => normal_01,
+                    (1, 0) => normal_10,
+                    (1, 1) => normal_11,
+                    _ => unreachable!(),
+                }
             };
-            Paragraph::new(text)
-                .fg(fg)
-                .block(Block::bordered())
-                .render(cell, buf);
+            Paragraph::new(text).style(*style).render(cell, buf);
         }
     }
 }
