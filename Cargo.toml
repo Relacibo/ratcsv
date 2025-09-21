@@ -1,7 +1,7 @@
 [package]
 name = "ratcsv"
-version = "0.1.0"
-description = "TUI CSV EDITOR"
+version = "0.1.0-preview"
+description = "TUI CSV Editor"
 authors = ["Reinhard Bronner <reinhard_bronner@t-online.de>"]
 license = "MIT"
 edition = "2024"

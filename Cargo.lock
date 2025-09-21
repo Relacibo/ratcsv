@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "ratcsv"
-version = "0.1.0"
+version = "0.1.0-preview"
 dependencies = [
  "clap",
  "color-eyre",

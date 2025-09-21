@@ -4,6 +4,12 @@ Minimalistic CSV Editor which makes use of [Ratatui](https://ratatui.rs).
 
 For now the keybinds are fixed and inspired by the Helix keybinds.
 
+## Install
+
+```bash
+cargo install --locked --git https://github.com/Relacibo/ratcsv.git
+```
+
 ## TODO
 
 [docs/TODO.md](docs/TODO.md)
