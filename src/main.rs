@@ -18,92 +18,53 @@ fn main() -> color_eyre::Result<()> {
     let args = Args::parse();
     color_eyre::install()?;
     let terminal = ratatui::init();
-    let result = App::new().run(terminal, args);
+    let result = App::new(terminal).run(args);
     ratatui::restore();
     result
 }
 
 /// The main application which holds the state and logic of the application.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 struct App {
+    terminal: DefaultTerminal,
+    state: AppState,
+}
+
+#[derive(Debug, Default)]
+struct AppState {
     /// Is the application running?
     running: bool,
-    input_state: InputState,
+    input: InputState,
     console_message: Option<ConsoleMessage>,
-    table: Option<CsvTableWidget>,
+    table: Option<CsvTableWrapper>,
     yank: Option<Yank>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Selection {
-    selected: Vec<CellLocation>,
-    primary: CellLocation,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Yank {
-    content: Vec<Vec<Option<String>>>,
-}
-
-impl Yank {
-    fn new(content: Vec<Vec<Option<String>>>) -> Self {
-        Self { content }
-    }
 }
 
 impl App {
     /// Construct a new instance of [`App`].
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn try_load_table(&mut self, file: PathBuf) -> color_eyre::Result<()> {
-        let csv_table = CsvTable::load_from_file(file)?;
-        self.table = Some(CsvTableWidget {
-            csv_table,
-            ..Default::default()
-        });
-        Ok(())
+    pub fn new(terminal: DefaultTerminal) -> Self {
+        Self {
+            terminal,
+            state: Default::default(),
+        }
     }
 
     /// Run the application's main loop.
-    fn run(mut self, mut terminal: DefaultTerminal, args: Args) -> Result<()> {
-        self.running = true;
+    fn run(mut self, args: Args) -> Result<()> {
+        self.state.running = true;
         if let Some(file) = args.file {
             let res = self.try_load_table(file);
             if let Err(err) = res {
-                self.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
             }
         }
-        while self.running {
-            terminal.draw(|frame| self.render(frame))?;
+        while self.state.running {
+            self.terminal.draw(|frame| self.state.render(frame))?;
             if let Err(err) = self.handle_crossterm_events() {
-                self.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
             };
         }
         Ok(())
-    }
-
-    /// Renders the user interface.
-    ///
-    /// This is where you add new widgets. See the following resources for more information:
-    ///
-    /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
-    /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
-    fn render(&mut self, frame: &mut Frame) {
-        let [main_area, console_bar] =
-            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Max(2)])
-                .areas(frame.area());
-        frame.render_widget(Block::new(), main_area);
-        if let Some(table) = &self.table {
-            frame.render_widget(table, main_area);
-        }
-
-        if let InputState::Console(console) = &self.input_state {
-            frame.render_widget(console, console_bar);
-        } else if let Some(console_message) = &self.console_message {
-            frame.render_widget(console_message, console_bar);
-        }
     }
 
     /// Reads the crossterm events and updates the state of [`App`].
@@ -114,8 +75,6 @@ impl App {
         match event::read()? {
             // it's important to check KeyEventKind::Press to avoid handling key release events
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key)?,
-            Event::Mouse(_) => {}
-            Event::Resize(_, _) => {}
             _ => {}
         }
         Ok(())
@@ -123,24 +82,24 @@ impl App {
 
     /// Handles the key events and updates the state of [`App`].
     fn on_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        self.console_message = None;
+        self.state.console_message = None;
         if let (_, KeyCode::Esc) = (key.modifiers, key.code) {
-            if self.console_message.is_some() {
-                self.console_message = None;
+            if self.state.console_message.is_some() {
+                self.state.console_message = None;
             } else {
-                self.input_state = InputState::Normal;
+                self.state.input = InputState::Normal;
             }
             return Ok(());
         }
-        match &self.input_state {
+        match &self.state.input {
             InputState::Normal => match (key.modifiers, key.code) {
                 (_, KeyCode::Char(':')) => {
-                    self.input_state = InputState::Console(Console {
+                    self.state.input = InputState::Console(Console {
                         mode: ConsoleBarMode::Console,
                         content: String::default(),
                     })
                 }
-                _ if self.table.is_some() => self.handle_table_key_input(key)?,
+                _ if self.state.table.is_some() => self.handle_table_key_input(key)?,
                 _ => {}
             },
             InputState::Console(_) => self.handle_console_input(key)?,
@@ -149,10 +108,10 @@ impl App {
     }
 
     fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<()> {
-        let InputState::Normal = &mut self.input_state else {
+        let InputState::Normal = &mut self.state.input else {
             unreachable!();
         };
-        let table = self.table.as_mut().unwrap();
+        let table = self.state.table.as_mut().unwrap();
         match (key.modifiers, key.code) {
             (_, KeyCode::Char('H')) => {
                 table.selection.selected = Vec::new();
@@ -179,13 +138,13 @@ impl App {
                     .csv_table
                     .get(table.selection.primary)
                     .unwrap_or_default();
-                self.input_state = InputState::Console(Console {
+                self.state.input = InputState::Console(Console {
                     mode: ConsoleBarMode::CellInput,
                     content: content.to_owned(),
                 });
             }
             (_, KeyCode::Char('c')) => {
-                self.input_state = InputState::Console(Console {
+                self.state.input = InputState::Console(Console {
                     mode: ConsoleBarMode::CellInput,
                     content: Default::default(),
                 })
@@ -198,7 +157,7 @@ impl App {
                     .map(ToOwned::to_owned);
                 let content = vec![vec![content]];
                 table.selection_yanked = Some(table.selection.clone());
-                self.yank = Some(Yank::new(content))
+                self.state.yank = Some(Yank::new(content))
             }
             (_, KeyCode::Char('d')) => {
                 // TODO: implement for rectangle selections
@@ -208,11 +167,11 @@ impl App {
                     .map(ToOwned::to_owned);
                 let content = vec![vec![content]];
                 table.csv_table.set(table.selection.primary, None);
-                self.yank = Some(Yank::new(content))
+                self.state.yank = Some(Yank::new(content))
             }
             (_, KeyCode::Char('p')) => {
                 // TODO: implement for rectangle selections
-                if let Some(Yank { content, .. }) = &mut self.yank {
+                if let Some(Yank { content, .. }) = &mut self.state.yank {
                     table
                         .csv_table
                         .set(table.selection.primary, content[0][0].take());
@@ -220,7 +179,7 @@ impl App {
                 }
             }
             (_, KeyCode::Char(':')) => {
-                self.input_state = InputState::Console(Console {
+                self.state.input = InputState::Console(Console {
                     mode: ConsoleBarMode::Console,
                     content: String::default(),
                 })
@@ -231,7 +190,7 @@ impl App {
     }
 
     fn handle_console_input(&mut self, key: KeyEvent) -> Result<()> {
-        let InputState::Console(Console { mode, content }) = &mut self.input_state else {
+        let InputState::Console(Console { mode, content }) = &mut self.state.input else {
             unreachable!();
         };
         match (key.modifiers, key.code) {
@@ -242,13 +201,13 @@ impl App {
                         self.try_execute_command(&content)?;
                     }
                     ConsoleBarMode::CellInput => {
-                        if let Some(table) = &mut self.table {
+                        if let Some(table) = &mut self.state.table {
                             table.csv_table.set(table.selection.primary, Some(content));
                         }
                     }
                 }
 
-                self.input_state = InputState::Normal;
+                self.state.input = InputState::Normal;
             }
             (m, KeyCode::Char(c)) => {
                 let c = if m == KeyModifiers::SHIFT {
@@ -269,7 +228,7 @@ impl App {
     fn try_execute_command(&mut self, command: &str) -> Result<()> {
         match command.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["w" | "write", ..] => {
-                if let Some(table) = &mut self.table {
+                if let Some(table) = &mut self.state.table {
                     table.csv_table.normalize_and_save()?;
                 };
             }
@@ -277,41 +236,76 @@ impl App {
                 self.quit();
             }
             ["wq" | "x" | "write-quit" | "wq!" | "x!" | "write-quit!", ..] => {
-                if let Some(table) = &mut self.table {
+                if let Some(table) = &mut self.state.table {
                     table.csv_table.normalize_and_save()?;
                 };
                 self.quit();
             }
             ["q" | "quit", ..] => {
-                if self.table.is_none() {
+                if self.state.table.is_none() {
                     self.quit();
                 }
-                self.console_message = Some(ConsoleMessage::error(
+                self.state.console_message = Some(ConsoleMessage::error(
                     "`quit` is not implemented - Use `quit!`",
                 ))
             }
             ["o" | "open", file, ..] => {
                 if let Err(err) = self.try_load_table(PathBuf::from(file)) {
-                    self.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                    self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
                 }
             }
             ["n" | "new", ..] => {
-                self.table = Some(CsvTableWidget::default());
+                self.state.table = Some(CsvTableWrapper::default());
             }
             ["bc!" | "buffer-close!", ..] => {
-                self.table = None;
+                self.state.table = None;
             }
             [c, ..] => {
-                self.console_message = Some(ConsoleMessage::error(format!("Unknown command: {c}")));
+                self.state.console_message =
+                    Some(ConsoleMessage::error(format!("Unknown command: {c}")));
             }
             _ => {}
         }
         Ok(())
     }
 
+    pub fn try_load_table(&mut self, file: PathBuf) -> color_eyre::Result<()> {
+        let csv_table = CsvTable::load_from_file(file)?;
+        self.state.table = Some(CsvTableWrapper {
+            csv_table,
+            ..Default::default()
+        });
+        Ok(())
+    }
+
     /// Set running to false to quit the application.
     fn quit(&mut self) {
-        self.running = false;
+        self.state.running = false;
+    }
+}
+
+impl AppState {
+    /// Renders the user interface.
+    ///
+    /// This is where you add new widgets. See the following resources for more information:
+    ///
+    /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
+    /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
+    fn render(&mut self, frame: &mut Frame) {
+        let [main_area, console_bar] =
+            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Max(2)])
+                .areas(frame.area());
+        frame.render_widget(Block::new(), main_area);
+        if let Some(table) = &mut self.table {
+            table.recalculate_dimensions(main_area.width, main_area.height);
+            frame.render_widget(&*table, main_area);
+        }
+
+        if let InputState::Console(console) = &self.input {
+            frame.render_widget(console, console_bar);
+        } else if let Some(console_message) = &self.console_message {
+            frame.render_widget(console_message, console_bar);
+        }
     }
 }
 
@@ -341,9 +335,11 @@ impl Default for CsvTableWidgetStyle {
 }
 
 #[derive(Debug, Clone)]
-struct CsvTableWidget {
+struct CsvTableWrapper {
     visible_cols: usize,
     visible_rows: usize,
+    cell_height_wanted: u16,
+    cell_width_wanted: u16,
     cell_height: u16,
     cell_width: u16,
     style: CsvTableWidgetStyle,
@@ -353,13 +349,15 @@ struct CsvTableWidget {
     selection_yanked: Option<Selection>,
 }
 
-impl Default for CsvTableWidget {
+impl Default for CsvTableWrapper {
     fn default() -> Self {
         Self {
             visible_cols: 5,
             visible_rows: 20,
-            cell_height: 1,
-            cell_width: 25,
+            cell_height_wanted: 1,
+            cell_width_wanted: 25,
+            cell_height: 0,
+            cell_width: 0,
             style: Default::default(),
             top_left_cell_location: Default::default(),
             csv_table: Default::default(),
@@ -369,7 +367,7 @@ impl Default for CsvTableWidget {
     }
 }
 
-impl CsvTableWidget {
+impl CsvTableWrapper {
     fn move_selection(&mut self, direction: MoveDirection, n: usize) {
         let n = n as isize;
         let delta = match direction {
@@ -380,12 +378,30 @@ impl CsvTableWidget {
         };
         self.selection.primary = self.selection.primary + delta;
     }
+
+    fn recalculate_dimensions(&mut self, available_cols: u16, available_rows: u16) {
+        self.visible_rows = (available_rows / self.cell_height_wanted) as usize;
+        if self.visible_rows == 0 {
+            self.visible_rows = if available_rows == 0 { 0 } else { 1 };
+            self.cell_height = available_rows;
+        } else {
+            self.cell_height = self.cell_height_wanted + available_rows % self.cell_height_wanted;
+        }
+
+        self.visible_cols = (available_cols / self.cell_width_wanted) as usize;
+        if self.visible_cols == 0 {
+            self.visible_cols = if available_cols == 0 { 0 } else { 1 };
+            self.cell_width = available_cols;
+        } else {
+            self.cell_width = self.cell_width_wanted + available_cols % self.cell_width_wanted;
+        }
+    }
 }
 
 /// https://ratatui.rs/recipes/layout/grid/
-impl Widget for &CsvTableWidget {
+impl Widget for &CsvTableWrapper {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let CsvTableWidget {
+        let CsvTableWrapper {
             visible_cols: cols,
             visible_rows: rows,
             cell_height,
@@ -395,6 +411,7 @@ impl Widget for &CsvTableWidget {
             csv_table,
             selection,
             selection_yanked,
+            ..
         } = self;
 
         let CsvTableWidgetStyle {
@@ -553,6 +570,23 @@ enum Severity {
 struct Args {
     #[arg()]
     file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Selection {
+    selected: Vec<CellLocation>,
+    primary: CellLocation,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Yank {
+    content: Vec<Vec<Option<String>>>,
+}
+
+impl Yank {
+    fn new(content: Vec<Vec<Option<String>>>) -> Self {
+        Self { content }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
