@@ -9,7 +9,6 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
 use std::{borrow::Cow, path::PathBuf};
@@ -89,12 +88,12 @@ impl App {
             if self.state.console_message.is_some() {
                 self.state.console_message = None;
             } else {
-                self.state.input = InputState::Normal;
+                self.state.input = InputState::default();
             }
             return Ok(());
         }
         match &self.state.input {
-            InputState::Normal => match (key.modifiers, key.code) {
+            InputState::Normal { .. } => match (key.modifiers, key.code) {
                 (_, KeyCode::Char(':')) => {
                     self.state.input = InputState::Console(Console {
                         mode: ConsoleBarMode::Console,
@@ -110,32 +109,39 @@ impl App {
     }
 
     fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<()> {
-        let InputState::Normal = &mut self.state.input else {
+        let InputState::Normal { combo } = &mut self.state.input else {
             unreachable!();
         };
         let table = self.state.table.as_mut().unwrap();
-        match (key.modifiers, key.code) {
-            (_, KeyCode::Char('H')) => {
+        match (key.modifiers, key.code, *combo) {
+            (_, KeyCode::Char('c'), Some(Combo::View)) => {
+                table.center_primary_selection();
+                *combo = None;
+            }
+            (_, KeyCode::Char('z'), None) => {
+                *combo = Some(Combo::View);
+            }
+            (_, KeyCode::Char('H'), None) => {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Left, table.visible_cols / 2);
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('d')) | (_, KeyCode::Char('J')) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('d'), None) | (_, KeyCode::Char('J'), None) => {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Down, table.visible_rows / 2);
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (_, KeyCode::Char('K')) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('u'), None) | (_, KeyCode::Char('K'), None) => {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Up, table.visible_rows / 2);
             }
-            (_, KeyCode::Char('L')) => {
+            (_, KeyCode::Char('L'), None) => {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Right, table.visible_cols / 2);
             }
-            (_, KeyCode::Char('h')) => table.move_selection(MoveDirection::Left, 1),
-            (_, KeyCode::Char('j')) => table.move_selection(MoveDirection::Down, 1),
-            (_, KeyCode::Char('k')) => table.move_selection(MoveDirection::Up, 1),
-            (_, KeyCode::Char('l')) => table.move_selection(MoveDirection::Right, 1),
-            (_, KeyCode::Char('i')) => {
+            (_, KeyCode::Char('h'), None) => table.move_selection(MoveDirection::Left, 1),
+            (_, KeyCode::Char('j'), None) => table.move_selection(MoveDirection::Down, 1),
+            (_, KeyCode::Char('k'), None) => table.move_selection(MoveDirection::Up, 1),
+            (_, KeyCode::Char('l'), None) => table.move_selection(MoveDirection::Right, 1),
+            (_, KeyCode::Char('i'), None) => {
                 let content = table
                     .csv_table
                     .get(table.selection.primary)
@@ -145,13 +151,13 @@ impl App {
                     content: content.to_owned(),
                 });
             }
-            (_, KeyCode::Char('c')) => {
+            (_, KeyCode::Char('c'), None) => {
                 self.state.input = InputState::Console(Console {
                     mode: ConsoleBarMode::CellInput,
                     content: Default::default(),
                 })
             }
-            (_, KeyCode::Char('y')) => {
+            (_, KeyCode::Char('y'), None) => {
                 // TODO: implement for rectangle selections
                 let content = table
                     .csv_table
@@ -161,7 +167,7 @@ impl App {
                 table.selection_yanked = Some(table.selection.clone());
                 self.state.yank = Some(Yank::new(content))
             }
-            (_, KeyCode::Char('d')) => {
+            (_, KeyCode::Char('d'), None) => {
                 // TODO: implement for rectangle selections
                 let content = table
                     .csv_table
@@ -171,20 +177,14 @@ impl App {
                 table.csv_table.set(table.selection.primary, None);
                 self.state.yank = Some(Yank::new(content))
             }
-            (_, KeyCode::Char('p')) => {
+            (_, KeyCode::Char('p'), None) => {
                 // TODO: implement for rectangle selections
-                if let Some(Yank { content, .. }) = &mut self.state.yank {
+                if let Some(Yank { content, .. }) = &self.state.yank {
                     table
                         .csv_table
-                        .set(table.selection.primary, content[0][0].take());
+                        .set(table.selection.primary, content[0][0].clone());
                     table.selection_yanked = None;
                 }
-            }
-            (_, KeyCode::Char(':')) => {
-                self.state.input = InputState::Console(Console {
-                    mode: ConsoleBarMode::Console,
-                    content: String::default(),
-                })
             }
             _ => {}
         }
@@ -209,7 +209,7 @@ impl App {
                     }
                 }
 
-                self.state.input = InputState::Normal;
+                self.state.input = InputState::default();
             }
             (m, KeyCode::Char(c)) => {
                 let c = if m == KeyModifiers::SHIFT {
@@ -378,7 +378,28 @@ impl CsvTableWrapper {
             MoveDirection::Up => CellLocationDelta { x: 0, y: -n },
             MoveDirection::Right => CellLocationDelta { x: n, y: 0 },
         };
-        self.selection.primary = self.selection.primary + delta;
+        self.selection.primary += delta;
+        let sel = self.selection.primary;
+
+        if sel.col < self.top_left_cell_location.col {
+            self.top_left_cell_location.col = sel.col;
+        } else if sel.col >= self.top_left_cell_location.col + self.visible_cols {
+            self.top_left_cell_location.col = sel.col - self.visible_cols + 1;
+        }
+
+        if sel.row < self.top_left_cell_location.row {
+            self.top_left_cell_location.row = sel.row;
+        } else if sel.row >= self.top_left_cell_location.row + self.visible_rows {
+            self.top_left_cell_location.row = sel.row - self.visible_rows + 1;
+        }
+    }
+
+    pub fn center_primary_selection(&mut self) {
+        self.top_left_cell_location = self.selection.primary
+            - CellLocationDelta {
+                x: (self.visible_cols / 2) as isize,
+                y: (self.visible_rows / 2) as isize,
+            }
     }
 
     fn recalculate_dimensions(&mut self, available_cols: u16, available_rows: u16) {
@@ -578,11 +599,16 @@ impl Widget for &Console {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 enum InputState {
-    #[default]
-    Normal,
+    Normal { combo: Option<Combo> },
     Console(Console),
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self::Normal { combo: None }
+    }
 }
 
 #[allow(unused)]
@@ -630,4 +656,9 @@ enum MoveDirection {
     Down,
     Up,
     Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Combo {
+    View,
 }

@@ -1,5 +1,5 @@
 use std::{
-    ops::{Add, Sub},
+    ops::{Add, AddAssign, Sub, SubAssign},
     path::PathBuf,
 };
 
@@ -166,6 +166,36 @@ impl Sub<CellLocationDelta> for CellLocation {
             self.row.saturating_sub(rhs.y as usize)
         };
         Self { col, row }
+    }
+}
+
+impl AddAssign<CellLocationDelta> for CellLocation {
+    fn add_assign(&mut self, rhs: CellLocationDelta) {
+        if rhs.x < 0 {
+            self.col = self.col.saturating_sub(-rhs.x as usize);
+        } else {
+            self.col += rhs.x as usize;
+        };
+        if rhs.y < 0 {
+            self.row = self.row.saturating_sub(-rhs.y as usize);
+        } else {
+            self.row += rhs.y as usize;
+        };
+    }
+}
+
+impl SubAssign<CellLocationDelta> for CellLocation {
+    fn sub_assign(&mut self, rhs: CellLocationDelta) {
+        if rhs.x < 0 {
+            self.col += -rhs.x as usize;
+        } else {
+            self.col = self.col.saturating_sub(rhs.x as usize);
+        };
+        if rhs.y < 0 {
+            self.row += -rhs.y as usize;
+        } else {
+            self.row = self.row.saturating_sub(rhs.y as usize);
+        };
     }
 }
 
