@@ -11,3 +11,4 @@
 - [ ] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
 - [ ] Jump to labeled field with `g` `w`
+- [ ] Special style for cells, that are both yanked and selected

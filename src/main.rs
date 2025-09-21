@@ -1,4 +1,5 @@
 pub mod content;
+pub(crate) mod symbols;
 
 use clap::Parser;
 use color_eyre::Result;
@@ -6,8 +7,9 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
 use std::{borrow::Cow, path::PathBuf};
@@ -329,7 +331,7 @@ impl Default for CsvTableWidgetStyle {
             normal_11: Style::new().bg(Color::Rgb(70, 70, 70)).fg(Color::White),
             primary_selection: Style::new().bg(Color::LightBlue).fg(Color::Black),
             secondary_selection: Style::new().bg(Color::Blue).fg(Color::Blue),
-            yanked: Style::new().bg(Color::Green).fg(Color::Black),
+            yanked: Style::new().fg(Color::Green),
         }
     }
 }
@@ -443,15 +445,11 @@ impl Widget for &CsvTableWrapper {
             let col = i % cols;
             let cell_location = *top_left_cell_location + CellLocation { row, col };
             let text = csv_table.get(cell_location).unwrap_or_default();
+
             let style = if *primary == cell_location {
                 primary_selection
             } else if selected.contains(&cell_location) {
                 secondary_selection
-            } else if let Some(selection) = &selection_yanked
-                && (selection.primary == cell_location
-                    || selection.selected.contains(&cell_location))
-            {
-                yanked
             } else {
                 match (row % 2, col % 2) {
                     (0, 0) => normal_00,
@@ -461,7 +459,44 @@ impl Widget for &CsvTableWrapper {
                     _ => unreachable!(),
                 }
             };
-            Paragraph::new(text).style(*style).render(cell, buf);
+
+            let area = if let Some(selection) = &selection_yanked
+                && (selection.primary == cell_location
+                    || selection.selected.contains(&cell_location))
+            {
+                let [left, main, right] = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(1), // links
+                        Constraint::Min(0),    // Mitte: Text, flexibel
+                        Constraint::Length(1), // rechts
+                    ])
+                    .areas(cell);
+                let yank_style = style.patch(*yanked);
+                // Left border
+                for y in 0..left.height {
+                    buf.cell_mut(Position::new(left.x, left.y + y))
+                        .unwrap()
+                        .set_symbol(symbols::HALF_BLOCK_LEFT)
+                        .set_style(yank_style);
+                }
+
+                // Right border
+                for y in 0..right.height {
+                    buf.cell_mut(Position::new(right.x, right.y + y))
+                        .unwrap()
+                        .set_symbol(symbols::HALF_BLOCK_RIGHT)
+                        .set_style(yank_style);
+                }
+                main
+            } else {
+                cell
+            };
+
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .style(*style)
+                .render(area, buf);
         }
     }
 }
