@@ -14,5 +14,5 @@
 - [ ] Undo/Redo
 - [ ] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
-- [ ] Jump to labeled field with `g` ident `g`i (Identifier can be letters, a number or a combination)
+- [ ] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
 - [x] Special style for cells, that are both yanked and selected

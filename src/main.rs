@@ -9,7 +9,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style, Stylize},
-    widgets::{Block, Paragraph, Widget},
+    widgets::{Block, Clear, Paragraph, Widget},
 };
 use std::{borrow::Cow, path::PathBuf};
 
@@ -300,7 +300,7 @@ impl AppState {
     /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
     fn render(&mut self, frame: &mut Frame) {
         let [main_area, console_bar] =
-            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Max(2)])
+            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Min(1)])
                 .areas(frame.area());
         frame.render_widget(Block::new(), main_area);
         if let Some(table) = &mut self.table {
@@ -579,8 +579,8 @@ impl Widget for &ConsoleMessage {
             Severity::Error => ("! ", Color::Red),
             _ => ("", Color::Reset),
         };
+        Clear.render(area, buf);
         let paragraph = Paragraph::new(format!("{prefix}{message}")).fg(color);
-
         paragraph.render(area, buf);
     }
 }
@@ -601,6 +601,7 @@ impl Widget for &Console {
             ConsoleBarMode::Console => ":",
             ConsoleBarMode::CellInput => ">",
         };
+        Clear.render(area, buf);
         let paragraph = Paragraph::new(format!("{prefix}{content}"));
         paragraph.render(area, buf);
     }
