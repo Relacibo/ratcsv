@@ -7,6 +7,8 @@ use std::{
 use color_eyre::eyre::eyre;
 use csv::{ReaderBuilder, Writer};
 
+use crate::MoveDirection;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CsvTable {
     rows: Vec<Vec<Option<String>>>,
@@ -149,6 +151,18 @@ impl Sub<CellLocation> for CellLocation {
 pub(crate) struct CellLocationDelta {
     pub(crate) x: isize,
     pub(crate) y: isize,
+}
+
+impl CellLocationDelta {
+    pub(crate) fn from_direction(direction: MoveDirection, n: usize) -> Self {
+        let n = n as isize;
+        match direction {
+            MoveDirection::Left => Self { x: -n, y: 0 },
+            MoveDirection::Down => Self { x: 0, y: n },
+            MoveDirection::Up => Self { x: 0, y: -n },
+            MoveDirection::Right => Self { x: n, y: 0 },
+        }
+    }
 }
 
 impl Add<CellLocationDelta> for CellLocation {

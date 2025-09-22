@@ -14,9 +14,10 @@
 - [ ] Undo/Redo
 - [ ] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
-- [ ] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
+- [x] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
 - [x] Special style for cells, that are both yanked and selected
 - [ ] Give cells horizontal and vertical to primary selection some "shade"
 - [ ] Unsaved changes recognititon, closable with `q`
 - [ ] `w!` and `wq!` to force-write
 - [ ] Maybe variable column width
+- [ ] Save separator of read in file. Also have command to show and change the separator

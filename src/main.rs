@@ -1,4 +1,4 @@
-pub mod content;
+mod content;
 pub(crate) mod symbols;
 
 use clap::Parser;
@@ -142,9 +142,27 @@ impl App {
 
         let table = self.state.table.as_mut().unwrap();
         match (key.modifiers, key.code, *combo) {
+            // View
             (_, KeyCode::Char('c' | 'z'), Some(Combo::View)) => {
                 table.center_primary_selection();
             }
+            (_, KeyCode::Char('h'), Some(Combo::View)) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_view(MoveDirection::Left, num);
+            }
+            (_, KeyCode::Char('j'), Some(Combo::View)) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_view(MoveDirection::Down, num);
+            }
+            (_, KeyCode::Char('k'), Some(Combo::View)) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_view(MoveDirection::Up, num);
+            }
+            (_, KeyCode::Char('l'), Some(Combo::View)) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_view(MoveDirection::Right, num);
+            }
+            // Goto
             (_, KeyCode::Char('g'), Some(Combo::Goto)) => {
                 if input_buffer.is_empty() {
                     table.move_selection_to(CellLocation { row: 0, col: 0 });
@@ -153,6 +171,18 @@ impl App {
                     let location = location_id.combine(table.selection.primary);
                     table.move_selection_to(location);
                 }
+            }
+            (_, KeyCode::Char('h'), Some(Combo::Goto)) => {
+                table.move_selection_to(CellLocation {
+                    row: table.selection.primary.row,
+                    col: 0,
+                });
+            }
+            (_, KeyCode::Char('k'), Some(Combo::Goto)) => {
+                table.move_selection_to(CellLocation {
+                    row: 0,
+                    col: table.selection.primary.col,
+                });
             }
             (_, KeyCode::Char('z'), None) => {
                 *combo = Some(Combo::View);
@@ -179,19 +209,19 @@ impl App {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Right, table.visible_cols / 2);
             }
-            (_, KeyCode::Char('h'), None) => {
+            (_, KeyCode::Char('h') | KeyCode::Left, None) => {
                 let num = input_buffer.parse().unwrap_or(1);
                 table.move_selection(MoveDirection::Left, num);
             }
-            (_, KeyCode::Char('j'), None) => {
+            (_, KeyCode::Char('j') | KeyCode::Down, None) => {
                 let num = input_buffer.parse().unwrap_or(1);
                 table.move_selection(MoveDirection::Down, num);
             }
-            (_, KeyCode::Char('k'), None) => {
+            (_, KeyCode::Char('k') | KeyCode::Up, None) => {
                 let num = input_buffer.parse().unwrap_or(1);
                 table.move_selection(MoveDirection::Up, num);
             }
-            (_, KeyCode::Char('l'), None) => {
+            (_, KeyCode::Char('l') | KeyCode::Right, None) => {
                 let num = input_buffer.parse().unwrap_or(1);
                 table.move_selection(MoveDirection::Right, num);
             }
@@ -433,14 +463,7 @@ impl Default for CsvTableWrapper {
 
 impl CsvTableWrapper {
     fn move_selection(&mut self, direction: MoveDirection, n: usize) {
-        let n = n as isize;
-        let delta = match direction {
-            MoveDirection::Left => CellLocationDelta { x: -n, y: 0 },
-            MoveDirection::Down => CellLocationDelta { x: 0, y: n },
-            MoveDirection::Up => CellLocationDelta { x: 0, y: -n },
-            MoveDirection::Right => CellLocationDelta { x: n, y: 0 },
-        };
-        self.selection.primary += delta;
+        self.selection.primary += CellLocationDelta::from_direction(direction, n);
         self.ensure_selection_in_view();
     }
 
@@ -449,19 +472,31 @@ impl CsvTableWrapper {
         self.ensure_selection_in_view();
     }
 
+    fn move_view(&mut self, direction: MoveDirection, n: usize) {
+        self.top_left_cell_location += CellLocationDelta::from_direction(direction, n);
+    }
+
+    #[expect(unused)]
+    fn move_view_to(&mut self, location: CellLocation) {
+        self.top_left_cell_location = location;
+    }
+
     fn ensure_selection_in_view(&mut self) {
         let sel = self.selection.primary;
 
-        if sel.col < self.top_left_cell_location.col {
-            self.top_left_cell_location.col = sel.col;
-        } else if sel.col >= self.top_left_cell_location.col + self.visible_cols {
-            self.top_left_cell_location.col = sel.col - self.visible_cols + 1;
+        let col_buffer = (self.visible_cols as f32 * 0.1).min(1.0) as usize;
+        let row_buffer = (self.visible_rows as f32 * 0.1).min(1.0) as usize;
+
+        if sel.col < self.top_left_cell_location.col + col_buffer {
+            self.top_left_cell_location.col = sel.col.saturating_sub(col_buffer);
+        } else if sel.col >= self.top_left_cell_location.col + self.visible_cols - col_buffer {
+            self.top_left_cell_location.col = sel.col + col_buffer - self.visible_cols + 1;
         }
 
-        if sel.row < self.top_left_cell_location.row {
-            self.top_left_cell_location.row = sel.row;
-        } else if sel.row >= self.top_left_cell_location.row + self.visible_rows {
-            self.top_left_cell_location.row = sel.row - self.visible_rows + 1;
+        if sel.row < self.top_left_cell_location.row + row_buffer {
+            self.top_left_cell_location.row = sel.row.saturating_sub(row_buffer);
+        } else if sel.row >= self.top_left_cell_location.row + self.visible_rows - row_buffer {
+            self.top_left_cell_location.row = sel.row + row_buffer - self.visible_rows + 1;
         }
     }
 
@@ -600,7 +635,7 @@ pub(crate) struct ConsoleMessage {
 }
 
 impl ConsoleMessage {
-    #[allow(unused)]
+    #[expect(unused)]
     pub(crate) fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
@@ -608,7 +643,6 @@ impl ConsoleMessage {
         }
     }
 
-    #[allow(unused)]
     pub(crate) fn error(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
@@ -616,7 +650,7 @@ impl ConsoleMessage {
         }
     }
 
-    #[allow(unused)]
+    #[expect(unused)]
     pub(crate) fn warning(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
@@ -624,7 +658,7 @@ impl ConsoleMessage {
         }
     }
 
-    #[allow(unused)]
+    #[expect(unused)]
     pub(crate) fn success(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
@@ -733,14 +767,8 @@ impl<'a> Widget for StatusWidget<'a> {
         Self: Sized,
     {
         let StatusWidget { state } = self;
-        let [buffer_area, combo_area, _, mode_area, coords_area] = Layout::horizontal([
-            Constraint::Length(9),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(8),
-        ])
-        .areas(area);
+        let [mode_area, coords_area] =
+            Layout::horizontal([Constraint::Length(10), Constraint::Length(8)]).areas(area);
 
         let (mode, buffer_str, combo_str) = match &state.input {
             InputState::Normal(Normal {
@@ -748,27 +776,39 @@ impl<'a> Widget for StatusWidget<'a> {
                 input_buffer,
                 ..
             }) => (
-                "NOR",
+                None,
                 Some(input_buffer),
                 combo.as_ref().map(ToString::to_string),
             ),
             InputState::Console(Console { mode, .. }) => match mode {
-                ConsoleBarMode::Console => ("CON", None, None),
-                ConsoleBarMode::CellInput => ("INS", None, None),
+                ConsoleBarMode::Console => (Some(("CON", Style::default())), None, None),
+                ConsoleBarMode::CellInput => (
+                    Some(("INS", Style::default().bg(Color::Yellow).fg(Color::Black))),
+                    None,
+                    None,
+                ),
             },
         };
 
-        if let Some(buffer_str) = buffer_str {
-            Paragraph::new(buffer_str.as_str())
-                .alignment(Alignment::Right)
-                .render(buffer_area, buf);
-        }
+        if let Some((mode, style)) = mode {
+            let [_, mode_area] =
+                Layout::horizontal([Constraint::Percentage(100), Constraint::Length(3)])
+                    .areas(mode_area);
+            Paragraph::new(mode).style(style).render(mode_area, buf);
+        } else {
+            let [buffer_area, combo_area] =
+                Layout::horizontal([Constraint::Length(9), Constraint::Length(1)]).areas(mode_area);
 
-        if let Some(combo_str) = combo_str {
-            Paragraph::new(combo_str.as_str()).render(combo_area, buf);
-        }
+            if let Some(buffer_str) = buffer_str {
+                Paragraph::new(buffer_str.as_str())
+                    .alignment(Alignment::Right)
+                    .render(buffer_area, buf);
+            }
 
-        Paragraph::new(mode).render(mode_area, buf);
+            if let Some(combo_str) = combo_str {
+                Paragraph::new(combo_str.as_str()).render(combo_area, buf);
+            }
+        }
 
         if let Some(table) = &state.table {
             Paragraph::new(table.selection.primary.to_string())
@@ -778,7 +818,6 @@ impl<'a> Widget for StatusWidget<'a> {
     }
 }
 
-#[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConsoleBarMode {
     Console,
