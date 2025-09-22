@@ -1,24 +1,30 @@
 use std::{
     fmt::Display,
+    io,
     ops::{Add, AddAssign, Sub, SubAssign},
     path::PathBuf,
 };
 
 use color_eyre::eyre::eyre;
-use csv::{ReaderBuilder, Writer};
+use csv::{ReaderBuilder, WriterBuilder};
 
 use crate::MoveDirection;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CsvTable {
+    delimiter: Option<u8>,
     rows: Vec<Vec<Option<String>>>,
     file: Option<PathBuf>,
 }
 
 impl CsvTable {
-    pub(crate) fn load_from_file(file: PathBuf) -> color_eyre::Result<Self> {
-        let mut reader = ReaderBuilder::new().has_headers(false).from_path(&file)?;
-
+    pub(crate) fn load_from_file(file: PathBuf, delimiter: Option<u8>) -> color_eyre::Result<Self> {
+        let mut builder = ReaderBuilder::new();
+        builder.has_headers(false);
+        if let Some(delimiter) = delimiter {
+            builder.delimiter(delimiter);
+        }
+        let mut reader = builder.from_path(&file)?;
         let mut rows: Vec<Vec<Option<String>>> = Vec::new();
 
         for result in reader.records() {
@@ -31,7 +37,33 @@ impl CsvTable {
             );
         }
         Ok(Self {
+            delimiter,
             file: Some(file),
+            rows,
+        })
+    }
+
+    pub(crate) fn from_stdin(delimiter: Option<u8>) -> color_eyre::Result<Self> {
+        let mut builder = ReaderBuilder::new();
+        builder.has_headers(false);
+        if let Some(delimiter) = delimiter {
+            builder.delimiter(delimiter);
+        }
+        let mut reader = builder.from_reader(io::stdin());
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+
+        for result in reader.records() {
+            let record = result?;
+            rows.push(
+                record
+                    .iter()
+                    .map(|s| (!s.is_empty()).then(|| s.to_owned()))
+                    .collect(),
+            );
+        }
+        Ok(Self {
+            delimiter,
+            file: None,
             rows,
         })
     }
@@ -87,7 +119,11 @@ impl CsvTable {
             return Err(eyre!("There is no file to write to!"));
         };
         self.normalize();
-        let mut wtr = Writer::from_path(file)?;
+        let mut builder = WriterBuilder::new();
+        if let Some(delimiter) = self.delimiter {
+            builder.delimiter(delimiter);
+        }
+        let mut wtr = builder.from_path(file)?;
 
         for row in &self.rows {
             let record: Vec<&str> = row
@@ -130,8 +166,8 @@ impl Add<CellLocation> for CellLocation {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
-            row: self.row + rhs.row,
-            col: self.col + rhs.col,
+            row: self.row.saturating_add(rhs.row),
+            col: self.col.saturating_add(rhs.col),
         }
     }
 }
@@ -172,12 +208,12 @@ impl Add<CellLocationDelta> for CellLocation {
         let col = if rhs.x < 0 {
             self.col.saturating_sub(-rhs.x as usize)
         } else {
-            self.col + (rhs.x as usize)
+            self.col.saturating_add(rhs.x as usize)
         };
         let row = if rhs.y < 0 {
             self.row.saturating_sub(-rhs.y as usize)
         } else {
-            self.row + (rhs.y as usize)
+            self.row.saturating_add(rhs.y as usize)
         };
         Self { col, row }
     }
@@ -188,12 +224,12 @@ impl Sub<CellLocationDelta> for CellLocation {
 
     fn sub(self, rhs: CellLocationDelta) -> Self::Output {
         let col = if rhs.x < 0 {
-            self.col + (-rhs.x as usize)
+            self.col.saturating_add(-rhs.x as usize)
         } else {
             self.col.saturating_sub(rhs.x as usize)
         };
         let row = if rhs.y < 0 {
-            self.row + (-rhs.y as usize)
+            self.row.saturating_add(-rhs.y as usize)
         } else {
             self.row.saturating_sub(rhs.y as usize)
         };
@@ -206,12 +242,12 @@ impl AddAssign<CellLocationDelta> for CellLocation {
         if rhs.x < 0 {
             self.col = self.col.saturating_sub(-rhs.x as usize);
         } else {
-            self.col += rhs.x as usize;
+            self.col = self.col.saturating_add(rhs.x as usize);
         };
         if rhs.y < 0 {
             self.row = self.row.saturating_sub(-rhs.y as usize);
         } else {
-            self.row += rhs.y as usize;
+            self.row = self.row.saturating_add(rhs.y as usize);
         };
     }
 }

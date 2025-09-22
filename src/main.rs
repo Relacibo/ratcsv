@@ -59,13 +59,9 @@ impl App {
         self.terminal
             .draw(|frame| frame.render_widget(SplashScreen, frame.area()))?;
 
-        if let Some(file) = args.file {
-            let res = self.try_load_table(file);
-            if let Err(err) = res {
-                self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
-            }
+        if let Err(err) = self.try_init(args) {
+            self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
         }
-
         while self.state.running {
             self.terminal.draw(|frame| self.state.render(frame))?;
             if let Err(err) = self.handle_crossterm_events() {
@@ -337,8 +333,9 @@ impl App {
                     "`quit` is not implemented - Use `quit!`",
                 ))
             }
-            ["o" | "open", file, ..] => {
-                if let Err(err) = self.try_load_table(PathBuf::from(file)) {
+            ["o" | "open", file, rest @ ..] => {
+                let delimiter = rest.first().and_then(|c| c.chars().next());
+                if let Err(err) = self.try_load_table(PathBuf::from(file), delimiter) {
                     self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
                 }
             }
@@ -357,8 +354,29 @@ impl App {
         Ok(())
     }
 
-    pub fn try_load_table(&mut self, file: PathBuf) -> color_eyre::Result<()> {
-        let csv_table = CsvTable::load_from_file(file)?;
+    fn try_load_table(&mut self, file: PathBuf, delimiter: Option<char>) -> color_eyre::Result<()> {
+        let csv_table = CsvTable::load_from_file(file, delimiter.map(|c| c as u8))?;
+        self.state.table = Some(CsvTableWrapper {
+            csv_table,
+            ..Default::default()
+        });
+        Ok(())
+    }
+
+    fn try_init(&mut self, args: Args) -> color_eyre::Result<()> {
+        let Args {
+            delimiter,
+            stdin,
+            file,
+        } = args;
+
+        let csv_table = if let Some(file) = file {
+            CsvTable::load_from_file(file, delimiter.map(|c| c as u8))?
+        } else if stdin {
+            CsvTable::from_stdin(delimiter.map(|c| c as u8))?
+        } else {
+            return Ok(());
+        };
         self.state.table = Some(CsvTableWrapper {
             csv_table,
             ..Default::default()
@@ -484,8 +502,8 @@ impl CsvTableWrapper {
     fn ensure_selection_in_view(&mut self) {
         let sel = self.selection.primary;
 
-        let col_buffer = (self.visible_cols as f32 * 0.1).min(1.0) as usize;
-        let row_buffer = (self.visible_rows as f32 * 0.1).min(1.0) as usize;
+        let col_buffer = (self.visible_cols as f32 * 0.1).max(1.0) as usize;
+        let row_buffer = (self.visible_rows as f32 * 0.1).max(1.0) as usize;
 
         if sel.col < self.top_left_cell_location.col + col_buffer {
             self.top_left_cell_location.col = sel.col.saturating_sub(col_buffer);
@@ -836,7 +854,16 @@ enum Severity {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = "Minimalistic Csv Editor")]
 struct Args {
-    #[arg()]
+    /// delimiter used for the FILE
+    ///
+    /// [default: ,]
+    #[arg(short, long)]
+    delimiter: Option<char>,
+    /// Read csv file from stdin
+    #[arg(long, conflicts_with = "file")]
+    stdin: bool,
+    /// Optional CSV File that will be loaded at start
+    #[arg(short, long, conflicts_with = "stdin")]
     file: Option<PathBuf>,
 }
 
@@ -939,16 +966,26 @@ impl FromStr for CsvJump {
 
         let row = caps
             .name("row")
-            .map(|row| row.as_str().parse::<usize>().unwrap().saturating_sub(1));
-        let col = caps.name("col").map(|col| {
-            let mut result = 0usize;
-            for c in col.as_str().chars() {
-                assert!(c.is_ascii_alphabetic());
-                let val = (c.to_ascii_uppercase() as u8 - b'A') as usize;
-                result = result * 26 + val + 1;
-            }
-            result - 1
-        });
+            .map(|row| row.as_str().parse::<usize>().map(|u| u.saturating_sub(1)))
+            .transpose()
+            .map_err(|_| eyre!("Column id too big!"))?;
+        let col = caps
+            .name("col")
+            .map(|col| -> Result<_> {
+                let mut result = 0usize;
+                for c in col.as_str().chars() {
+                    assert!(c.is_ascii_alphabetic());
+                    let val = (c.to_ascii_uppercase() as u8 - b'A') as usize + 1;
+                    result = result
+                        .checked_mul(26)
+                        .ok_or_else(|| eyre!("Row id too big!"))?;
+                    result = result
+                        .checked_add(val)
+                        .ok_or_else(|| eyre!("Row id too big!"))?;
+                }
+                Ok(result - 1)
+            })
+            .transpose()?;
         if row.is_none() && col.is_none() {
             return Err(eyre!("Emtpy location id!"));
         }
