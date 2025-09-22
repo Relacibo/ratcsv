@@ -2,7 +2,7 @@ pub mod content;
 pub(crate) mod symbols;
 
 use clap::Parser;
-use color_eyre::Result;
+use color_eyre::{Result, eyre::eyre};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -11,7 +11,8 @@ use ratatui::{
     style::{Color, Style, Stylize},
     widgets::{Block, Clear, Paragraph, Widget},
 };
-use std::{borrow::Cow, path::PathBuf};
+use regex::Regex;
+use std::{borrow::Cow, cell::LazyCell, fmt::Display, path::PathBuf, str::FromStr};
 
 use crate::content::{CellLocation, CellLocationDelta, CsvTable};
 
@@ -64,6 +65,7 @@ impl App {
                 self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
             }
         }
+
         while self.state.running {
             self.terminal.draw(|frame| self.state.render(frame))?;
             if let Err(err) = self.handle_crossterm_events() {
@@ -105,7 +107,13 @@ impl App {
                         content: String::default(),
                     })
                 }
-                _ if self.state.table.is_some() => self.handle_table_key_input(key)?,
+                _ if self.state.table.is_some() => {
+                    let res = self.handle_table_key_input(key);
+                    if res.is_err() || matches!(res, Ok(false)) {
+                        self.state.input = Default::default();
+                        res?;
+                    }
+                }
                 _ => {}
             },
             InputState::Console(_) => self.handle_console_input(key)?,
@@ -113,18 +121,47 @@ impl App {
         Ok(())
     }
 
-    fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<()> {
-        let InputState::Normal { combo } = &mut self.state.input else {
+    fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<bool> {
+        let InputState::Normal(Normal {
+            combo,
+            collect_all,
+            input_buffer,
+        }) = &mut self.state.input
+        else {
             unreachable!();
         };
+
+        if let KeyCode::Char(c) = key.code
+            && (c.is_ascii_digit()
+                || (input_buffer.is_empty() && (c == '+' || c == '-'))
+                || (*collect_all && c.is_ascii_uppercase() || c.is_ascii_digit()))
+        {
+            input_buffer.push(c);
+            return Ok(true);
+        }
+
         let table = self.state.table.as_mut().unwrap();
         match (key.modifiers, key.code, *combo) {
             (_, KeyCode::Char('c' | 'z'), Some(Combo::View)) => {
                 table.center_primary_selection();
-                *combo = None;
+            }
+            (_, KeyCode::Char('g'), Some(Combo::Goto)) => {
+                if input_buffer.is_empty() {
+                    table.move_selection_to(CellLocation { row: 0, col: 0 });
+                } else {
+                    let location_id = CsvJump::from_str(input_buffer)?;
+                    let location = location_id.combine(table.selection.primary);
+                    table.move_selection_to(location);
+                }
             }
             (_, KeyCode::Char('z'), None) => {
                 *combo = Some(Combo::View);
+                return Ok(true);
+            }
+            (_, KeyCode::Char('g'), None) => {
+                *combo = Some(Combo::Goto);
+                *collect_all = true;
+                return Ok(true);
             }
             (_, KeyCode::Char('H'), None) => {
                 table.selection.selected = Vec::new();
@@ -142,10 +179,22 @@ impl App {
                 table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Right, table.visible_cols / 2);
             }
-            (_, KeyCode::Char('h'), None) => table.move_selection(MoveDirection::Left, 1),
-            (_, KeyCode::Char('j'), None) => table.move_selection(MoveDirection::Down, 1),
-            (_, KeyCode::Char('k'), None) => table.move_selection(MoveDirection::Up, 1),
-            (_, KeyCode::Char('l'), None) => table.move_selection(MoveDirection::Right, 1),
+            (_, KeyCode::Char('h'), None) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_selection(MoveDirection::Left, num);
+            }
+            (_, KeyCode::Char('j'), None) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_selection(MoveDirection::Down, num);
+            }
+            (_, KeyCode::Char('k'), None) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_selection(MoveDirection::Up, num);
+            }
+            (_, KeyCode::Char('l'), None) => {
+                let num = input_buffer.parse().unwrap_or(1);
+                table.move_selection(MoveDirection::Right, num);
+            }
             (_, KeyCode::Char('i'), None) => {
                 let content = table
                     .csv_table
@@ -155,12 +204,14 @@ impl App {
                     mode: ConsoleBarMode::CellInput,
                     content: content.to_owned(),
                 });
+                return Ok(true);
             }
             (_, KeyCode::Char('c'), None) => {
                 self.state.input = InputState::Console(Console {
                     mode: ConsoleBarMode::CellInput,
                     content: Default::default(),
-                })
+                });
+                return Ok(true);
             }
             (_, KeyCode::Char('y'), None) => {
                 // TODO: implement for rectangle selections
@@ -191,9 +242,9 @@ impl App {
                     table.selection_yanked = None;
                 }
             }
-            _ => *combo = None,
+            _ => {}
         }
-        Ok(())
+        Ok(false)
     }
 
     fn handle_console_input(&mut self, key: KeyEvent) -> Result<()> {
@@ -300,8 +351,7 @@ impl AppState {
     /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
     fn render(&mut self, frame: &mut Frame) {
         let [main_area, console_bar] =
-            Layout::vertical(vec![Constraint::Percentage(98), Constraint::Min(1)])
-                .areas(frame.area());
+            Layout::vertical([Constraint::Percentage(100), Constraint::Min(1)]).areas(frame.area());
         frame.render_widget(Block::new(), main_area);
         if let Some(table) = &mut self.table {
             table.recalculate_dimensions(main_area.width, main_area.height);
@@ -309,12 +359,17 @@ impl AppState {
         } else {
             frame.render_widget(SplashScreen, main_area);
         }
+        let [main_console, status] =
+            Layout::horizontal([Constraint::Percentage(100), Constraint::Min(22)])
+                .areas(console_bar);
 
         if let InputState::Console(console) = &self.input {
-            frame.render_widget(console, console_bar);
+            frame.render_widget(console, main_console);
         } else if let Some(console_message) = &self.console_message {
-            frame.render_widget(console_message, console_bar);
+            frame.render_widget(console_message, main_console);
         }
+
+        frame.render_widget(StatusWidget { state: self }, status);
     }
 }
 
@@ -386,6 +441,15 @@ impl CsvTableWrapper {
             MoveDirection::Right => CellLocationDelta { x: n, y: 0 },
         };
         self.selection.primary += delta;
+        self.ensure_selection_in_view();
+    }
+
+    fn move_selection_to(&mut self, location: CellLocation) {
+        self.selection.primary = location;
+        self.ensure_selection_in_view();
+    }
+
+    fn ensure_selection_in_view(&mut self) {
         let sel = self.selection.primary;
 
         if sel.col < self.top_left_cell_location.col {
@@ -642,13 +706,75 @@ impl Widget for SplashScreen {
 
 #[derive(Clone, Debug)]
 enum InputState {
-    Normal { combo: Option<Combo> },
+    Normal(Normal),
     Console(Console),
 }
 
 impl Default for InputState {
     fn default() -> Self {
-        Self::Normal { combo: None }
+        Self::Normal(Normal::default())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Normal {
+    combo: Option<Combo>,
+    collect_all: bool,
+    input_buffer: String,
+}
+
+struct StatusWidget<'a> {
+    state: &'a AppState,
+}
+
+impl<'a> Widget for StatusWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let StatusWidget { state } = self;
+        let [buffer_area, combo_area, _, mode_area, coords_area] = Layout::horizontal([
+            Constraint::Length(9),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(8),
+        ])
+        .areas(area);
+
+        let (mode, buffer_str, combo_str) = match &state.input {
+            InputState::Normal(Normal {
+                combo,
+                input_buffer,
+                ..
+            }) => (
+                "NOR",
+                Some(input_buffer),
+                combo.as_ref().map(ToString::to_string),
+            ),
+            InputState::Console(Console { mode, .. }) => match mode {
+                ConsoleBarMode::Console => ("CON", None, None),
+                ConsoleBarMode::CellInput => ("INS", None, None),
+            },
+        };
+
+        if let Some(buffer_str) = buffer_str {
+            Paragraph::new(buffer_str.as_str())
+                .alignment(Alignment::Right)
+                .render(buffer_area, buf);
+        }
+
+        if let Some(combo_str) = combo_str {
+            Paragraph::new(combo_str.as_str()).render(combo_area, buf);
+        }
+
+        Paragraph::new(mode).render(mode_area, buf);
+
+        if let Some(table) = &state.table {
+            Paragraph::new(table.selection.primary.to_string())
+                .alignment(Alignment::Right)
+                .render(coords_area, buf);
+        };
     }
 }
 
@@ -702,4 +828,90 @@ enum MoveDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Combo {
     View,
+    Goto,
+}
+
+impl Display for Combo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Combo::View => "v",
+            Combo::Goto => "g",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CsvJump {
+    sign: Option<isize>,
+    row: Option<usize>,
+    col: Option<usize>,
+}
+
+impl CsvJump {
+    #[must_use]
+    fn combine(self, location: CellLocation) -> CellLocation {
+        let Some(sign) = self.sign else {
+            return CellLocation {
+                row: self.row.unwrap_or(location.row),
+                col: self.col.unwrap_or(location.col),
+            };
+        };
+
+        let row = if let Some(r) = self.row {
+            if sign == -1 {
+                location.row.saturating_sub(r)
+            } else {
+                location.row + r
+            }
+        } else {
+            location.row
+        };
+        let col = if let Some(c) = self.col {
+            if sign == -1 {
+                location.col.saturating_sub(c)
+            } else {
+                location.col + c
+            }
+        } else {
+            location.col
+        };
+        CellLocation { row, col }
+    }
+}
+
+impl FromStr for CsvJump {
+    type Err = color_eyre::eyre::Report;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        thread_local! {
+            static RE: LazyCell<Regex> = LazyCell::new(|| Regex::new(r#"^(?P<sign>[+-])?(?P<col>[[:alpha:]]+)?(?P<row>\d+)?$"#).unwrap());
+        }
+        let Some(caps) = RE.with(|i| i.captures(s)) else {
+            return Err(eyre!("Not a valid location id!"));
+        };
+
+        let sign = match caps.name("sign").map(|s| s.as_str()) {
+            Some("+") => Some(1),
+            Some("-") => Some(-1),
+            _ => None,
+        };
+
+        let row = caps
+            .name("row")
+            .map(|row| row.as_str().parse::<usize>().unwrap().saturating_sub(1));
+        let col = caps.name("col").map(|col| {
+            let mut result = 0usize;
+            for c in col.as_str().chars() {
+                assert!(c.is_ascii_alphabetic());
+                let val = (c.to_ascii_uppercase() as u8 - b'A') as usize;
+                result = result * 26 + val + 1;
+            }
+            result - 1
+        });
+        if row.is_none() && col.is_none() {
+            return Err(eyre!("Emtpy location id!"));
+        }
+        Ok(Self { sign, row, col })
+    }
 }

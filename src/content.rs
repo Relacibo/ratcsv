@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     ops::{Add, AddAssign, Sub, SubAssign},
     path::PathBuf,
 };
@@ -103,6 +104,23 @@ impl CsvTable {
 pub(crate) struct CellLocation {
     pub(crate) row: usize,
     pub(crate) col: usize,
+}
+
+impl Display for CellLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let CellLocation { row, mut col } = *self;
+        let mut col_str = String::new();
+
+        loop {
+            let rem = col % 26;
+            col_str.insert(0, (b'A' + rem as u8) as char);
+            if col < 26 {
+                break;
+            }
+            col = col / 26 - 1;
+        }
+        write!(f, "{}{}", col_str, row + 1)
+    }
 }
 
 impl Add<CellLocation> for CellLocation {
