@@ -795,6 +795,7 @@ enum Severity {
 }
 
 #[derive(Parser, Debug)]
+#[command(version, about, long_about = "Minimalistic Csv Editor")]
 struct Args {
     #[arg()]
     file: Option<PathBuf>,
