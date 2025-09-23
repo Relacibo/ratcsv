@@ -319,7 +319,10 @@ impl App {
     }
 
     fn try_execute_command(&mut self, command: &str) -> Result<()> {
-        let command_split = command.split_whitespace().collect::<Vec<_>>();
+        let command_split = command
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
         match &command_split[..] {
             ["q!" | "quit!", ..] => {
                 self.quit();
@@ -378,7 +381,7 @@ impl App {
             }
             ["delimiter"] => {
                 let message = match table.csv_table.delimiter {
-                    Some(b'\t') => "\\t".to_string(),
+                    Some(b'\t') => r"\t".to_string(),
                     Some(delim) => (delim as char).to_string(),
                     None => "unset".to_string(),
                 };
@@ -387,7 +390,7 @@ impl App {
             ["delimiter", d, ..] => {
                 table.csv_table.delimiter = match *d {
                     "unset" => None,
-                    "\t" => Some(b'\t'),
+                    r"\t" => Some(b'\t'),
                     s if s.len() == 1 => Some(s.as_bytes()[0]),
                     _ => table.csv_table.delimiter,
                 };
