@@ -2,7 +2,10 @@ mod content;
 pub(crate) mod symbols;
 
 use clap::Parser;
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::{
+    Result,
+    eyre::{bail, eyre},
+};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -12,7 +15,13 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget},
 };
 use regex::Regex;
-use std::{borrow::Cow, cell::LazyCell, fmt::Display, path::PathBuf, str::FromStr};
+use std::{
+    borrow::Cow,
+    cell::LazyCell,
+    fmt::{Debug, Display},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use crate::content::{CellLocation, CellLocationDelta, CsvTable};
 
@@ -180,6 +189,7 @@ impl App {
                     col: table.selection.primary.col,
                 });
             }
+            // No mode
             (_, KeyCode::Char('z'), None) => {
                 *combo = Some(Combo::View);
                 return Ok(true);
@@ -280,18 +290,17 @@ impl App {
         match (key.modifiers, key.code) {
             (_, KeyCode::Enter) => {
                 let content = content.clone();
-                match mode {
-                    ConsoleBarMode::Console => {
-                        self.try_execute_command(&content)?;
-                    }
+                let res = match mode {
+                    ConsoleBarMode::Console => self.try_execute_command(&content),
                     ConsoleBarMode::CellInput => {
                         if let Some(table) = &mut self.state.table {
                             table.csv_table.set(table.selection.primary, Some(content));
                         }
+                        Ok(())
                     }
-                }
-
+                };
                 self.state.input = InputState::default();
+                res?;
             }
             (m, KeyCode::Char(c)) => {
                 let c = if m == KeyModifiers::SHIFT {
@@ -310,12 +319,8 @@ impl App {
     }
 
     fn try_execute_command(&mut self, command: &str) -> Result<()> {
-        match command.split_whitespace().collect::<Vec<_>>().as_slice() {
-            ["w" | "write", ..] => {
-                if let Some(table) = &mut self.state.table {
-                    table.csv_table.normalize_and_save()?;
-                };
-            }
+        let command_split = command.split_whitespace().collect::<Vec<_>>();
+        match &command_split[..] {
             ["q!" | "quit!", ..] => {
                 self.quit();
             }
@@ -340,18 +345,56 @@ impl App {
                 }
             }
             ["n" | "new", ..] => {
-                self.state.table = Some(CsvTableWrapper::default());
+                if self.state.table.is_none() {
+                    self.state.table = Some(CsvTableWrapper::default())
+                }
             }
             ["bc!" | "buffer-close!", ..] => {
                 self.state.table = None;
             }
             [c, ..] => {
-                self.state.console_message =
-                    Some(ConsoleMessage::error(format!("Unknown command: {c}")));
+                let handled = if self.state.table.is_some() {
+                    self.handle_table_commands(&command_split)?
+                } else {
+                    false
+                };
+                if !handled {
+                    bail!("Unknown command: {c}");
+                }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_table_commands(&mut self, command: &[&str]) -> Result<bool> {
+        let Some(table) = &mut self.state.table else {
+            unreachable!();
+        };
+
+        match command {
+            ["w" | "write", ..] => {
+                table.csv_table.normalize_and_save()?;
+            }
+            ["delimiter"] => {
+                let message = match table.csv_table.delimiter {
+                    Some(b'\t') => "\\t".to_string(),
+                    Some(delim) => (delim as char).to_string(),
+                    None => "unset".to_string(),
+                };
+                self.state.console_message = Some(ConsoleMessage::new(message));
+            }
+            ["delimiter", d, ..] => {
+                table.csv_table.delimiter = match *d {
+                    "unset" => None,
+                    "\t" => Some(b'\t'),
+                    s if s.len() == 1 => Some(s.as_bytes()[0]),
+                    _ => table.csv_table.delimiter,
+                };
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     fn try_load_table(&mut self, file: PathBuf, delimiter: Option<char>) -> color_eyre::Result<()> {
@@ -653,12 +696,16 @@ pub(crate) struct ConsoleMessage {
 }
 
 impl ConsoleMessage {
-    #[expect(unused)]
     pub(crate) fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
             ..Default::default()
         }
+    }
+
+    #[expect(unused)]
+    pub fn severity(self, severity: Severity) -> Self {
+        Self { severity, ..self }
     }
 
     pub(crate) fn error(message: impl Into<Cow<'static, str>>) -> Self {

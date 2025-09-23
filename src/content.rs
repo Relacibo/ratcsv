@@ -12,9 +12,9 @@ use crate::MoveDirection;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CsvTable {
-    delimiter: Option<u8>,
+    pub(crate) delimiter: Option<u8>,
     rows: Vec<Vec<Option<String>>>,
-    file: Option<PathBuf>,
+    pub(crate) file: Option<PathBuf>,
 }
 
 impl CsvTable {
@@ -255,12 +255,12 @@ impl AddAssign<CellLocationDelta> for CellLocation {
 impl SubAssign<CellLocationDelta> for CellLocation {
     fn sub_assign(&mut self, rhs: CellLocationDelta) {
         if rhs.x < 0 {
-            self.col += -rhs.x as usize;
+            self.col = self.col.saturating_add(-rhs.x as usize);
         } else {
             self.col = self.col.saturating_sub(rhs.x as usize);
         };
         if rhs.y < 0 {
-            self.row += -rhs.y as usize;
+            self.row = self.row.saturating_add(-rhs.y as usize);
         } else {
             self.row = self.row.saturating_sub(rhs.y as usize);
         };
@@ -272,8 +272,8 @@ impl Add<CellLocationDelta> for CellLocationDelta {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
+            x: self.x.saturating_add(rhs.x),
+            y: self.y.saturating_add(rhs.y),
         }
     }
 }
