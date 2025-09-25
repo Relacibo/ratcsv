@@ -19,13 +19,14 @@ use std::{
     borrow::Cow,
     cell::LazyCell,
     fmt::{Debug, Display},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
 use crate::content::{CellLocation, CellLocationDelta, CsvTable};
 
 const LOGO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/logo.txt"));
+const ROW_LABEL_WIDTH: u16 = 4;
 
 fn main() -> color_eyre::Result<()> {
     let args = Args::parse();
@@ -45,11 +46,10 @@ struct App {
 
 #[derive(Debug, Default)]
 struct AppState {
-    /// Is the application running?
     running: bool,
     input: InputState,
     console_message: Option<ConsoleMessage>,
-    table: Option<CsvTableWrapper>,
+    table: Option<CsvTableView>,
     yank: Option<Yank>,
 }
 
@@ -327,9 +327,17 @@ impl App {
             ["q!" | "quit!", ..] => {
                 self.quit();
             }
-            ["wq" | "x" | "write-quit" | "wq!" | "x!" | "write-quit!", ..] => {
+            ["wq" | "x" | "write-quit", rest @ ..] => {
+                let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
                 if let Some(table) = &mut self.state.table {
-                    table.csv_table.normalize_and_save()?;
+                    table.csv_table.normalize_and_save(file, false)?;
+                };
+                self.quit();
+            }
+            ["wq!" | "x!" | "write-quit!", rest @ ..] => {
+                if let Some(table) = &mut self.state.table {
+                    let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
+                    table.csv_table.normalize_and_save(file, true)?;
                 };
                 self.quit();
             }
@@ -349,7 +357,7 @@ impl App {
             }
             ["n" | "new", ..] => {
                 if self.state.table.is_none() {
-                    self.state.table = Some(CsvTableWrapper::default())
+                    self.state.table = Some(CsvTableView::default())
                 }
             }
             ["bc!" | "buffer-close!", ..] => {
@@ -376,8 +384,13 @@ impl App {
         };
 
         match command {
-            ["w" | "write", ..] => {
-                table.csv_table.normalize_and_save()?;
+            ["w" | "write", rest @ ..] => {
+                let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
+                table.csv_table.normalize_and_save(file, false)?;
+            }
+            ["w!" | "write!", rest @ ..] => {
+                let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
+                table.csv_table.normalize_and_save(file, true)?;
             }
             ["delimiter"] => {
                 let message = match table.csv_table.delimiter {
@@ -395,6 +408,15 @@ impl App {
                     _ => table.csv_table.delimiter,
                 };
             }
+            ["save-path", ..] => {
+                let message = table
+                    .csv_table
+                    .file
+                    .as_deref()
+                    .map(Path::to_string_lossy)
+                    .unwrap_or("No save path set!".into());
+                self.state.console_message = Some(ConsoleMessage::new(message.into_owned()))
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -402,7 +424,7 @@ impl App {
 
     fn try_load_table(&mut self, file: PathBuf, delimiter: Option<char>) -> color_eyre::Result<()> {
         let csv_table = CsvTable::load_from_file(file, delimiter.map(|c| c as u8))?;
-        self.state.table = Some(CsvTableWrapper {
+        self.state.table = Some(CsvTableView {
             csv_table,
             ..Default::default()
         });
@@ -423,7 +445,7 @@ impl App {
         } else {
             return Ok(());
         };
-        self.state.table = Some(CsvTableWrapper {
+        self.state.table = Some(CsvTableView {
             csv_table,
             ..Default::default()
         });
@@ -444,11 +466,35 @@ impl AppState {
     /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
     /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
     fn render(&mut self, frame: &mut Frame) {
-        let [main_area, console_bar] =
-            Layout::vertical([Constraint::Percentage(100), Constraint::Min(1)]).areas(frame.area());
+        let [column_labels_area, main_area, console_bar] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Percentage(100),
+            Constraint::Min(1),
+        ])
+        .areas(frame.area());
+
         frame.render_widget(Block::new(), main_area);
         if let Some(table) = &mut self.table {
+            let [corner, col_labels_area] = Layout::horizontal([
+                Constraint::Min(ROW_LABEL_WIDTH),
+                Constraint::Percentage(100),
+            ])
+            .areas(column_labels_area);
+            let [row_labels_area, main_area] = Layout::horizontal([
+                Constraint::Min(ROW_LABEL_WIDTH),
+                Constraint::Percentage(100),
+            ])
+            .areas(main_area);
+
             table.recalculate_dimensions(main_area.width, main_area.height);
+
+            // Render labels: Could also use one widget with the whole area
+            Block::new()
+                .style(table.style.label_normal)
+                .render(corner, frame.buffer_mut());
+            frame.render_widget(ColLabelsWidget(table), col_labels_area);
+            frame.render_widget(RowLabelsWidget(table), row_labels_area);
+
             frame.render_widget(&*table, main_area);
         } else {
             frame.render_widget(SplashScreen, main_area);
@@ -468,6 +514,7 @@ impl AppState {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 struct CsvTableWidgetStyle {
     normal_00: Style,
     normal_01: Style,
@@ -476,6 +523,8 @@ struct CsvTableWidgetStyle {
     primary_selection: Style,
     secondary_selection: Style,
     yanked: Style,
+    label_normal: Style,
+    label_primary_selection: Style,
 }
 
 impl Default for CsvTableWidgetStyle {
@@ -486,14 +535,16 @@ impl Default for CsvTableWidgetStyle {
             normal_10: Style::new().bg(Color::Rgb(67, 67, 67)).fg(Color::White),
             normal_11: Style::new().bg(Color::Rgb(70, 70, 70)).fg(Color::White),
             primary_selection: Style::new().bg(Color::LightBlue).fg(Color::Black),
-            secondary_selection: Style::new().bg(Color::Blue).fg(Color::Blue),
+            secondary_selection: Style::new().bg(Color::Blue).fg(Color::Black),
             yanked: Style::new().fg(Color::Green),
+            label_normal: Style::new().bg(Color::Black).fg(Color::Rgb(160, 160, 160)),
+            label_primary_selection: Style::new().bg(Color::Black).fg(Color::LightBlue),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct CsvTableWrapper {
+struct CsvTableView {
     visible_cols: usize,
     visible_rows: usize,
     cell_height_wanted: u16,
@@ -507,7 +558,7 @@ struct CsvTableWrapper {
     selection_yanked: Option<Selection>,
 }
 
-impl Default for CsvTableWrapper {
+impl Default for CsvTableView {
     fn default() -> Self {
         Self {
             visible_cols: 5,
@@ -525,7 +576,7 @@ impl Default for CsvTableWrapper {
     }
 }
 
-impl CsvTableWrapper {
+impl CsvTableView {
     fn move_selection(&mut self, direction: MoveDirection, n: usize) {
         self.selection.primary += CellLocationDelta::from_direction(direction, n);
         self.ensure_selection_in_view();
@@ -592,11 +643,11 @@ impl CsvTableWrapper {
 }
 
 /// https://ratatui.rs/recipes/layout/grid/
-impl Widget for &CsvTableWrapper {
+impl Widget for &CsvTableView {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let CsvTableWrapper {
-            visible_cols: cols,
-            visible_rows: rows,
+        let CsvTableView {
+            visible_cols,
+            visible_rows,
             cell_height,
             cell_width,
             style,
@@ -615,25 +666,27 @@ impl Widget for &CsvTableWrapper {
             primary_selection,
             secondary_selection,
             yanked,
+            ..
         } = style;
 
         let Selection { selected, primary } = selection;
-        let col_constraints = (0..*cols).map(|_| Constraint::Length(*cell_width));
-        let row_constraints = (0..*rows).map(|_| Constraint::Length(*cell_height));
+        let col_constraints = (0..*visible_cols).map(|_| Constraint::Length(*cell_width));
+        let row_constraints = (0..*visible_rows).map(|_| Constraint::Length(*cell_height));
         let horizontal = Layout::horizontal(col_constraints).spacing(0);
         let vertical = Layout::vertical(row_constraints).spacing(0);
 
         let rows = vertical.split(area);
         let cells = rows.iter().flat_map(|&row| horizontal.split(row).to_vec());
 
+        // Possible in new version
         // let cells = area
         //     .layout_vec(&vertical)
         //     .iter()
         //     .flat_map(|row| row.layout_vec(&horizontal));
 
         for (i, cell) in cells.enumerate() {
-            let row = i / cols;
-            let col = i % cols;
+            let row = i / visible_cols;
+            let col = i % visible_cols;
             let cell_location = *top_left_cell_location + CellLocation { row, col };
             let text = csv_table.get(cell_location).unwrap_or_default();
 
@@ -803,6 +856,78 @@ impl Widget for SplashScreen {
         };
 
         paragraph.render(logo_area, buf);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ColLabelsWidget<'a>(&'a CsvTableView);
+
+impl<'a> Widget for ColLabelsWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let ColLabelsWidget(CsvTableView {
+            visible_cols,
+            cell_width,
+            style,
+            top_left_cell_location,
+            selection,
+            ..
+        }) = self;
+
+        let CellLocation { col: col_left, .. } = top_left_cell_location;
+        let col_constraints = (0..*visible_cols).map(|_| Constraint::Length(*cell_width));
+        let labels = Layout::horizontal(col_constraints).spacing(0).split(area);
+
+        for col_label in 0..*visible_cols {
+            let col = col_left + col_label;
+            let style = if selection.primary.col == col {
+                style.label_primary_selection
+            } else {
+                style.label_normal
+            };
+            Paragraph::new(CellLocation::col_index_to_id(col))
+                .style(style)
+                .alignment(Alignment::Center)
+                .render(labels[col_label], buf);
+        }
+    }
+}
+#[derive(Clone, Debug)]
+
+struct RowLabelsWidget<'a>(&'a CsvTableView);
+
+impl<'a> Widget for RowLabelsWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let RowLabelsWidget(CsvTableView {
+            visible_rows,
+            cell_height,
+            style,
+            top_left_cell_location,
+            selection,
+            ..
+        }) = self;
+
+        let CellLocation { row: row_top, .. } = top_left_cell_location;
+        let row_constraints = (0..*visible_rows).map(|_| Constraint::Length(*cell_height));
+        let labels = Layout::vertical(row_constraints).spacing(0).split(area);
+
+        for row_label in 0..*visible_rows {
+            let row = row_top + row_label;
+            let style = if selection.primary.row == row {
+                style.label_primary_selection
+            } else {
+                style.label_normal
+            };
+            Paragraph::new(CellLocation::row_index_to_id(row))
+                .style(style)
+                .alignment(Alignment::Center)
+                .render(labels[row_label], buf);
+        }
     }
 }
 

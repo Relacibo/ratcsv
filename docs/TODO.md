@@ -1,9 +1,8 @@
 # TODO
-- [ ] `write` should accept optional second argument for file name
+- [x] `write` should accept optional second argument for file name
 - [ ] Select multiple cells
 - [ ] File picker for `open`, `write`
 - [x] Create new buffer with `n` command
-- [ ] Maybe custom keybinds at some point
 - [ ] Custom styles
 - [x] Cells should stretch over whole area
 - [x] Table should move with selection
@@ -12,7 +11,7 @@
   - [ ] `Shift` + `j` or `t`, etc.
   - [ ] `j`, etc.
 - [ ] Undo/Redo
-- [ ] Column/row labels
+- [x] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
 - [x] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
 - [x] Special style for cells, that are both yanked and selected
@@ -20,4 +19,12 @@
 - [ ] Unsaved changes recognititon, closable with `q`
 - [ ] `w!` and `wq!` to force-write
 - [ ] Maybe variable column width
-- [ ] Save separator of read in file. Also have command to show and change the separator
+- [x] Save separator of read in file. Also have command to show and change the separator
+- [ ] Recognize separator of opened file 
+- [ ] Split window
+
+## BACKLOG
+- [ ] Maybe custom keybinds at some point
+- [ ] Keybinds help
+- [ ] File picker
+- [ ] Open multiple files at the same time

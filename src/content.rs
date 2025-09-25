@@ -1,11 +1,12 @@
 use std::{
+    borrow::Cow,
     fmt::Display,
-    io,
+    fs, io,
     ops::{Add, AddAssign, Sub, SubAssign},
     path::PathBuf,
 };
 
-use color_eyre::eyre::eyre;
+use color_eyre::eyre::{bail, eyre};
 use csv::{ReaderBuilder, WriterBuilder};
 
 use crate::MoveDirection;
@@ -114,16 +115,34 @@ impl CsvTable {
         }
     }
 
-    pub(crate) fn normalize_and_save(&mut self) -> color_eyre::Result<()> {
-        let Some(file) = self.file.clone() else {
-            return Err(eyre!("There is no file to write to!"));
+    pub(crate) fn normalize_and_save(
+        &mut self,
+        file_name: Option<PathBuf>,
+        create_new_file: bool,
+    ) -> color_eyre::Result<()> {
+        let Some(file) = file_name
+            .map(Cow::Owned)
+            .or_else(|| self.file.as_deref().map(Cow::Borrowed))
+        else {
+            bail!("Need file name!");
         };
+
+        if !file.exists() {
+            if create_new_file {
+                let parent = file.parent().ok_or_else(|| eyre!("File path invalid!"))?;
+                fs::create_dir_all(parent)?;
+            } else {
+                bail!("File does not exist!");
+            }
+        }
+        self.file = Some(file.into_owned());
+
         self.normalize();
         let mut builder = WriterBuilder::new();
         if let Some(delimiter) = self.delimiter {
             builder.delimiter(delimiter);
         }
-        let mut wtr = builder.from_path(file)?;
+        let mut wtr = builder.from_path(self.file.as_ref().unwrap())?;
 
         for row in &self.rows {
             let record: Vec<&str> = row
@@ -142,6 +161,25 @@ impl CsvTable {
 pub(crate) struct CellLocation {
     pub(crate) row: usize,
     pub(crate) col: usize,
+}
+
+impl CellLocation {
+    pub(crate) fn col_index_to_id(mut col: usize) -> String {
+        let mut col_str = String::new();
+
+        loop {
+            let rem = col % 26;
+            col_str.insert(0, (b'A' + rem as u8) as char);
+            if col < 26 {
+                break;
+            }
+            col = col / 26 - 1;
+        }
+        col_str
+    }
+    pub(crate) fn row_index_to_id(row: usize) -> String {
+        (row + 1).to_string()
+    }
 }
 
 impl Display for CellLocation {
