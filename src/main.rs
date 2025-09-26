@@ -380,6 +380,18 @@ impl App {
                 }
                 self.quit();
             }
+            ["bc" | "buffer-close", ..] => {
+                let Some(table) = &self.state.table else {
+                    self.state.table = None;
+                    return Ok(());
+                };
+                if table.is_dirty() {
+                    bail!(
+                        "There are unsaved changes! Use `buffer-close!` to force closing buffer!",
+                    );
+                }
+                self.state.table = None;
+            }
             ["o" | "open", file, rest @ ..] => {
                 let delimiter = rest.first().and_then(|c| c.chars().next()).map(|c| c as u8);
                 let res = CsvBuffer::load(LoadOption::File(PathBuf::from(file)), delimiter);

@@ -27,8 +27,8 @@ pub(crate) struct CsvBuffer {
     pub(crate) csv_table: CsvTable,
     pub(crate) selection: Selection,
     pub(crate) selection_yanked: Option<Selection>,
-    pub(crate) saved_hash: u64,
     pub(crate) file: Option<PathBuf>,
+    saved_hash: u64,
 }
 
 impl Default for CsvBuffer {
@@ -59,14 +59,6 @@ pub(crate) enum LoadOption {
 }
 
 impl CsvBuffer {
-    pub(crate) fn new(csv_table: CsvTable) -> Self {
-        CsvBuffer {
-            saved_hash: hash_table(&csv_table),
-            csv_table,
-            ..Default::default()
-        }
-    }
-
     pub(crate) fn load(load_option: LoadOption, delimiter: Option<u8>) -> color_eyre::Result<Self> {
         let (csv_table, file) = match load_option {
             LoadOption::File(path_buf) => {
@@ -119,10 +111,6 @@ impl CsvBuffer {
 
     pub(crate) fn is_dirty(&self) -> bool {
         hash_table(&self.csv_table) != self.saved_hash
-    }
-
-    pub(crate) fn update_saved_hash(&mut self) {
-        self.saved_hash = hash_table(&self.csv_table)
     }
 
     pub(crate) fn move_selection(&mut self, direction: MoveDirection, n: usize) {
