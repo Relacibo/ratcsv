@@ -1,3 +1,4 @@
+mod buffer;
 pub(crate) mod color_ext;
 mod content;
 pub(crate) mod symbols;
@@ -25,8 +26,9 @@ use std::{
 };
 
 use crate::{
+    buffer::{CsvBuffer, LoadOption},
     color_ext::ColorExt,
-    content::{CellLocation, CellLocationDelta, CsvTable},
+    content::CellLocation,
 };
 
 const LOGO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/logo.txt"));
@@ -53,7 +55,7 @@ struct AppState {
     running: bool,
     input: InputState,
     console_message: Option<ConsoleMessage>,
-    table: Option<CsvTableView>,
+    table: Option<CsvBuffer>,
     yank: Option<Yank>,
 }
 
@@ -357,34 +359,40 @@ impl App {
             ["wq" | "x" | "write-quit", rest @ ..] => {
                 let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
                 if let Some(table) = &mut self.state.table {
-                    table.csv_table.normalize_and_save(file, false)?;
+                    table.save(file, false)?;
                 };
                 self.quit();
             }
             ["wq!" | "x!" | "write-quit!", rest @ ..] => {
                 if let Some(table) = &mut self.state.table {
                     let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
-                    table.csv_table.normalize_and_save(file, true)?;
+                    table.save(file, true)?;
                 };
                 self.quit();
             }
             ["q" | "quit", ..] => {
-                if self.state.table.is_none() {
+                let Some(table) = &self.state.table else {
                     self.quit();
+                    return Ok(());
+                };
+                if table.is_dirty() {
+                    bail!("There are unsaved changes! Use `quit!` to force quit!",);
                 }
-                self.state.console_message = Some(ConsoleMessage::error(
-                    "`quit` is not implemented - Use `quit!`",
-                ))
+                self.quit();
             }
             ["o" | "open", file, rest @ ..] => {
-                let delimiter = rest.first().and_then(|c| c.chars().next());
-                if let Err(err) = self.try_load_table(PathBuf::from(file), delimiter) {
-                    self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                let delimiter = rest.first().and_then(|c| c.chars().next()).map(|c| c as u8);
+                let res = CsvBuffer::load(LoadOption::File(PathBuf::from(file)), delimiter);
+                match res {
+                    Ok(t) => self.state.table = Some(t),
+                    Err(err) => {
+                        self.state.console_message = Some(ConsoleMessage::error(format!("{err}")));
+                    }
                 }
             }
             ["n" | "new", ..] => {
                 if self.state.table.is_none() {
-                    self.state.table = Some(CsvTableView::default())
+                    self.state.table = Some(CsvBuffer::default())
                 }
             }
             ["bc!" | "buffer-close!", ..] => {
@@ -413,11 +421,19 @@ impl App {
         match command {
             ["w" | "write", rest @ ..] => {
                 let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
-                table.csv_table.normalize_and_save(file, false)?;
+                let saved = table.save(file, false)?;
+                self.state.console_message = Some(ConsoleMessage::new(format!(
+                    "{} written!",
+                    saved.to_string_lossy()
+                )))
             }
             ["w!" | "write!", rest @ ..] => {
                 let file = rest.first().map(|f| PathBuf::from_str(f)).transpose()?;
-                table.csv_table.normalize_and_save(file, true)?;
+                let saved = table.save(file, true)?;
+                self.state.console_message = Some(ConsoleMessage::new(format!(
+                    "{} written!",
+                    saved.to_string_lossy()
+                )))
             }
             ["delimiter"] => {
                 let message = match table.csv_table.delimiter {
@@ -437,7 +453,6 @@ impl App {
             }
             ["save-path", ..] => {
                 let message = table
-                    .csv_table
                     .file
                     .as_deref()
                     .map(Path::to_string_lossy)
@@ -449,33 +464,21 @@ impl App {
         Ok(true)
     }
 
-    fn try_load_table(&mut self, file: PathBuf, delimiter: Option<char>) -> color_eyre::Result<()> {
-        let csv_table = CsvTable::load_from_file(file, delimiter.map(|c| c as u8))?;
-        self.state.table = Some(CsvTableView {
-            csv_table,
-            ..Default::default()
-        });
-        Ok(())
-    }
-
     fn try_init(&mut self, args: Args) -> color_eyre::Result<()> {
         let Args {
             delimiter,
-            stdin,
             file,
+            stdin,
         } = args;
-
-        let csv_table = if let Some(file) = file {
-            CsvTable::load_from_file(file, delimiter.map(|c| c as u8))?
+        let load_option = if let Some(file) = file {
+            LoadOption::File(file)
         } else if stdin {
-            CsvTable::from_stdin(delimiter.map(|c| c as u8))?
+            LoadOption::Stdin
         } else {
             return Ok(());
         };
-        self.state.table = Some(CsvTableView {
-            csv_table,
-            ..Default::default()
-        });
+        let table = CsvBuffer::load(load_option, delimiter.map(|d| d as u8))?;
+        self.state.table = Some(table);
         Ok(())
     }
 
@@ -522,7 +525,7 @@ impl AppState {
             frame.render_widget(ColLabelsWidget(table), col_labels_area);
             frame.render_widget(RowLabelsWidget(table), row_labels_area);
 
-            frame.render_widget(&*table, main_area);
+            frame.render_widget(MainTableWidget(table), main_area);
         } else {
             frame.render_widget(SplashScreen, main_area);
         }
@@ -568,109 +571,13 @@ impl Default for CsvTableWidgetStyle {
     }
 }
 
-#[derive(Debug, Clone)]
-struct CsvTableView {
-    visible_cols: usize,
-    visible_rows: usize,
-    cell_height_wanted: u16,
-    cell_width_wanted: u16,
-    cell_height: u16,
-    cell_width: u16,
-    style: CsvTableWidgetStyle,
-    top_left_cell_location: CellLocation,
-    csv_table: CsvTable,
-    selection: Selection,
-    selection_yanked: Option<Selection>,
-}
-
-impl Default for CsvTableView {
-    fn default() -> Self {
-        Self {
-            visible_cols: 5,
-            visible_rows: 20,
-            cell_height_wanted: 1,
-            cell_width_wanted: 25,
-            cell_height: 0,
-            cell_width: 0,
-            style: Default::default(),
-            top_left_cell_location: Default::default(),
-            csv_table: Default::default(),
-            selection: Default::default(),
-            selection_yanked: Default::default(),
-        }
-    }
-}
-
-impl CsvTableView {
-    fn move_selection(&mut self, direction: MoveDirection, n: usize) {
-        self.selection.primary += CellLocationDelta::from_direction(direction, n);
-        self.ensure_selection_in_view();
-    }
-
-    fn move_selection_to(&mut self, location: CellLocation) {
-        self.selection.primary = location;
-        self.ensure_selection_in_view();
-    }
-
-    fn move_view(&mut self, direction: MoveDirection, n: usize) {
-        self.top_left_cell_location += CellLocationDelta::from_direction(direction, n);
-    }
-
-    #[expect(unused)]
-    fn move_view_to(&mut self, location: CellLocation) {
-        self.top_left_cell_location = location;
-    }
-
-    fn ensure_selection_in_view(&mut self) {
-        let sel = self.selection.primary;
-
-        let col_buffer = (self.visible_cols as f32 * 0.1).max(1.0) as usize;
-        let row_buffer = (self.visible_rows as f32 * 0.1).max(1.0) as usize;
-
-        if sel.col < self.top_left_cell_location.col + col_buffer {
-            self.top_left_cell_location.col = sel.col.saturating_sub(col_buffer);
-        } else if sel.col >= self.top_left_cell_location.col + self.visible_cols - col_buffer {
-            self.top_left_cell_location.col = sel.col + col_buffer - self.visible_cols + 1;
-        }
-
-        if sel.row < self.top_left_cell_location.row + row_buffer {
-            self.top_left_cell_location.row = sel.row.saturating_sub(row_buffer);
-        } else if sel.row >= self.top_left_cell_location.row + self.visible_rows - row_buffer {
-            self.top_left_cell_location.row = sel.row + row_buffer - self.visible_rows + 1;
-        }
-    }
-
-    pub fn center_primary_selection(&mut self) {
-        self.top_left_cell_location = self.selection.primary
-            - CellLocationDelta {
-                x: (self.visible_cols / 2) as isize,
-                y: (self.visible_rows / 2) as isize,
-            }
-    }
-
-    fn recalculate_dimensions(&mut self, available_cols: u16, available_rows: u16) {
-        self.visible_rows = (available_rows / self.cell_height_wanted) as usize;
-        if self.visible_rows == 0 {
-            self.visible_rows = if available_rows == 0 { 0 } else { 1 };
-            self.cell_height = available_rows;
-        } else {
-            self.cell_height = self.cell_height_wanted + available_rows % self.cell_height_wanted;
-        }
-
-        self.visible_cols = (available_cols / self.cell_width_wanted) as usize;
-        if self.visible_cols == 0 {
-            self.visible_cols = if available_cols == 0 { 0 } else { 1 };
-            self.cell_width = available_cols;
-        } else {
-            self.cell_width = self.cell_width_wanted + available_cols % self.cell_width_wanted;
-        }
-    }
-}
+#[derive(Clone, Debug)]
+struct MainTableWidget<'a>(&'a CsvBuffer);
 
 /// https://ratatui.rs/recipes/layout/grid/
-impl Widget for &CsvTableView {
+impl Widget for MainTableWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let CsvTableView {
+        let CsvBuffer {
             visible_cols,
             visible_rows,
             cell_height,
@@ -681,7 +588,7 @@ impl Widget for &CsvTableView {
             selection,
             selection_yanked,
             ..
-        } = self;
+        } = self.0;
 
         let CsvTableWidgetStyle {
             normal_00,
@@ -962,14 +869,14 @@ impl Widget for SplashScreen {
 }
 
 #[derive(Clone, Debug)]
-struct ColLabelsWidget<'a>(&'a CsvTableView);
+struct ColLabelsWidget<'a>(&'a CsvBuffer);
 
 impl<'a> Widget for ColLabelsWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        let ColLabelsWidget(CsvTableView {
+        let ColLabelsWidget(CsvBuffer {
             visible_cols,
             cell_width,
             style,
@@ -998,14 +905,14 @@ impl<'a> Widget for ColLabelsWidget<'a> {
 }
 #[derive(Clone, Debug)]
 
-struct RowLabelsWidget<'a>(&'a CsvTableView);
+struct RowLabelsWidget<'a>(&'a CsvBuffer);
 
 impl<'a> Widget for RowLabelsWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        let RowLabelsWidget(CsvTableView {
+        let RowLabelsWidget(CsvBuffer {
             visible_rows,
             cell_height,
             style,
@@ -1147,7 +1054,7 @@ struct Args {
     #[arg(long, conflicts_with = "file")]
     stdin: bool,
     /// Optional CSV File that will be loaded at start
-    #[arg(short, long, conflicts_with = "stdin")]
+    #[arg(conflicts_with = "stdin")]
     file: Option<PathBuf>,
 }
 

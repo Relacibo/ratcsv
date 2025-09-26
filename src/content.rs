@@ -1,12 +1,9 @@
 use std::{
-    borrow::Cow,
     fmt::Display,
-    fs, io,
+    io::{Read, Write},
     ops::{Add, AddAssign, Sub, SubAssign},
-    path::PathBuf,
 };
 
-use color_eyre::eyre::{bail, eyre};
 use csv::{ReaderBuilder, WriterBuilder};
 
 use crate::MoveDirection;
@@ -15,17 +12,16 @@ use crate::MoveDirection;
 pub(crate) struct CsvTable {
     pub(crate) delimiter: Option<u8>,
     rows: Vec<Vec<Option<String>>>,
-    pub(crate) file: Option<PathBuf>,
 }
 
 impl CsvTable {
-    pub(crate) fn load_from_file(file: PathBuf, delimiter: Option<u8>) -> color_eyre::Result<Self> {
+    pub(crate) fn load(read: impl Read, delimiter: Option<u8>) -> color_eyre::Result<Self> {
         let mut builder = ReaderBuilder::new();
         builder.has_headers(false);
         if let Some(delimiter) = delimiter {
             builder.delimiter(delimiter);
         }
-        let mut reader = builder.from_path(&file)?;
+        let mut reader = builder.from_reader(read);
         let mut rows: Vec<Vec<Option<String>>> = Vec::new();
 
         for result in reader.records() {
@@ -37,36 +33,7 @@ impl CsvTable {
                     .collect(),
             );
         }
-        Ok(Self {
-            delimiter,
-            file: Some(file),
-            rows,
-        })
-    }
-
-    pub(crate) fn from_stdin(delimiter: Option<u8>) -> color_eyre::Result<Self> {
-        let mut builder = ReaderBuilder::new();
-        builder.has_headers(false);
-        if let Some(delimiter) = delimiter {
-            builder.delimiter(delimiter);
-        }
-        let mut reader = builder.from_reader(io::stdin());
-        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-
-        for result in reader.records() {
-            let record = result?;
-            rows.push(
-                record
-                    .iter()
-                    .map(|s| (!s.is_empty()).then(|| s.to_owned()))
-                    .collect(),
-            );
-        }
-        Ok(Self {
-            delimiter,
-            file: None,
-            rows,
-        })
+        Ok(Self { delimiter, rows })
     }
 
     pub(crate) fn get(&self, location: CellLocation) -> Option<&str> {
@@ -115,34 +82,13 @@ impl CsvTable {
         }
     }
 
-    pub(crate) fn normalize_and_save(
-        &mut self,
-        file_name: Option<PathBuf>,
-        create_new_file: bool,
-    ) -> color_eyre::Result<()> {
-        let Some(file) = file_name
-            .map(Cow::Owned)
-            .or_else(|| self.file.as_deref().map(Cow::Borrowed))
-        else {
-            bail!("Need file name!");
-        };
-
-        if !file.exists() {
-            if create_new_file {
-                let parent = file.parent().ok_or_else(|| eyre!("File path invalid!"))?;
-                fs::create_dir_all(parent)?;
-            } else {
-                bail!("File does not exist!");
-            }
-        }
-        self.file = Some(file.into_owned());
-
+    pub(crate) fn normalize_and_save(&mut self, write: &mut impl Write) -> color_eyre::Result<()> {
         self.normalize();
         let mut builder = WriterBuilder::new();
         if let Some(delimiter) = self.delimiter {
             builder.delimiter(delimiter);
         }
-        let mut wtr = builder.from_path(self.file.as_ref().unwrap())?;
+        let mut wtr = builder.from_writer(write);
 
         for row in &self.rows {
             let record: Vec<&str> = row
@@ -157,6 +103,20 @@ impl CsvTable {
     }
 }
 
+impl std::hash::Hash for CsvTable {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.delimiter.hash(state);
+        for (row_idx, row) in self.rows.iter().enumerate() {
+            for (col_idx, cell) in row.iter().enumerate() {
+                if let Some(value) = cell {
+                    row_idx.hash(state);
+                    col_idx.hash(state);
+                    value.hash(state);
+                }
+            }
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CellLocation {
     pub(crate) row: usize,

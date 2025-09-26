@@ -24,6 +24,7 @@
 - [ ] Split window
 - [ ] Maybe combine labels with table widget
 - [ ] Mark all labels on rows/cols of selection rectangle
+- [ ] Throw errors in command handler instead of printing errors
 
 ## BACKLOG
 - [ ] Maybe custom keybinds at some point
