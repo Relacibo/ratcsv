@@ -614,20 +614,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "rat"
-version = "0.1.1-preview"
-dependencies = [
- "ahash",
- "ansi_colours",
- "clap",
- "color-eyre",
- "crossterm",
- "csv",
- "ratatui",
- "regex",
-]
-
-[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -646,6 +632,20 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "ratcsv"
+version = "0.1.1-preview"
+dependencies = [
+ "ahash",
+ "ansi_colours",
+ "clap",
+ "color-eyre",
+ "crossterm",
+ "csv",
+ "ratatui",
+ "regex",
 ]
 
 [[package]]
