@@ -22,6 +22,8 @@
 - [x] Save separator of read in file. Also have command to show and change the separator
 - [ ] Recognize separator of opened file 
 - [ ] Split window
+- [ ] Maybe combine labels with table widget
+- [ ] Mark all labels on rows/cols of selection rectangle
 
 ## BACKLOG
 - [ ] Maybe custom keybinds at some point

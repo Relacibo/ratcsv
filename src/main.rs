@@ -1,3 +1,4 @@
+pub(crate) mod color_ext;
 mod content;
 pub(crate) mod symbols;
 
@@ -23,7 +24,10 @@ use std::{
     str::FromStr,
 };
 
-use crate::content::{CellLocation, CellLocationDelta, CsvTable};
+use crate::{
+    color_ext::ColorExt,
+    content::{CellLocation, CellLocationDelta, CsvTable},
+};
 
 const LOGO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/logo.txt"));
 const ROW_LABEL_WIDTH: u16 = 4;
@@ -105,16 +109,16 @@ impl App {
             return Ok(());
         }
         match &self.state.input {
-            InputState::Normal { .. } => match (key.modifiers, key.code) {
+            InputState::Main { .. } => match (key.modifiers, key.code) {
                 (_, KeyCode::Char(':')) => {
-                    self.state.input = InputState::Console(Console {
+                    self.state.input = InputState::Console(InputModeConsole {
                         mode: ConsoleBarMode::Console,
                         content: String::default(),
                     })
                 }
                 _ if self.state.table.is_some() => {
                     let res = self.handle_table_key_input(key);
-                    if res.is_err() || matches!(res, Ok(false)) {
+                    if res.is_err() {
                         self.state.input = Default::default();
                         res?;
                     }
@@ -126,8 +130,9 @@ impl App {
         Ok(())
     }
 
-    fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<bool> {
-        let InputState::Normal(Normal {
+    fn handle_table_key_input(&mut self, key: KeyEvent) -> Result<()> {
+        let InputState::Main(InputModeMain {
+            mode,
             combo,
             collect_all,
             input_buffer,
@@ -142,8 +147,10 @@ impl App {
                 || (*collect_all && c.is_ascii_uppercase() || c.is_ascii_digit()))
         {
             input_buffer.push(c);
-            return Ok(true);
+            return Ok(());
         }
+
+        let mut keep_combo = false;
 
         let table = self.state.table.as_mut().unwrap();
         match (key.modifiers, key.code, *combo) {
@@ -192,27 +199,32 @@ impl App {
             // No mode
             (_, KeyCode::Char('z'), None) => {
                 *combo = Some(Combo::View);
-                return Ok(true);
+                keep_combo = true;
             }
             (_, KeyCode::Char('g'), None) => {
                 *combo = Some(Combo::Goto);
                 *collect_all = true;
-                return Ok(true);
+                keep_combo = true;
+            }
+            (_, KeyCode::Char('v'), None) => {
+                if *mode == MainMode::Normal {
+                    table.selection.opposite = Some(table.selection.primary);
+                    *mode = MainMode::Visual
+                } else {
+                    table.selection.opposite = None;
+                    *mode = MainMode::Normal
+                };
             }
             (_, KeyCode::Char('H'), None) => {
-                table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Left, table.visible_cols / 2);
             }
             (KeyModifiers::CONTROL, KeyCode::Char('d'), None) | (_, KeyCode::Char('J'), None) => {
-                table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Down, table.visible_rows / 2);
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u'), None) | (_, KeyCode::Char('K'), None) => {
-                table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Up, table.visible_rows / 2);
             }
             (_, KeyCode::Char('L'), None) => {
-                table.selection.selected = Vec::new();
                 table.move_selection(MoveDirection::Right, table.visible_cols / 2);
             }
             (_, KeyCode::Char('h') | KeyCode::Left, None) => {
@@ -236,18 +248,16 @@ impl App {
                     .csv_table
                     .get(table.selection.primary)
                     .unwrap_or_default();
-                self.state.input = InputState::Console(Console {
+                self.state.input = InputState::Console(InputModeConsole {
                     mode: ConsoleBarMode::CellInput,
                     content: content.to_owned(),
                 });
-                return Ok(true);
             }
             (_, KeyCode::Char('c'), None) => {
-                self.state.input = InputState::Console(Console {
+                self.state.input = InputState::Console(InputModeConsole {
                     mode: ConsoleBarMode::CellInput,
                     content: Default::default(),
                 });
-                return Ok(true);
             }
             (_, KeyCode::Char('y'), None) => {
                 // TODO: implement for rectangle selections
@@ -256,8 +266,10 @@ impl App {
                     .get(table.selection.primary)
                     .map(ToOwned::to_owned);
                 let content = vec![vec![content]];
-                table.selection_yanked = Some(table.selection.clone());
-                self.state.yank = Some(Yank::new(content))
+                table.selection_yanked = Some(table.selection);
+                self.state.yank = Some(Yank::new(content));
+                table.selection.opposite = None;
+                *mode = MainMode::Normal;
             }
             (_, KeyCode::Char('d'), None) => {
                 // TODO: implement for rectangle selections
@@ -267,7 +279,9 @@ impl App {
                     .map(ToOwned::to_owned);
                 let content = vec![vec![content]];
                 table.csv_table.set(table.selection.primary, None);
-                self.state.yank = Some(Yank::new(content))
+                self.state.yank = Some(Yank::new(content));
+                table.selection.opposite = None;
+                *mode = MainMode::Normal;
             }
             (_, KeyCode::Char('p'), None) => {
                 // TODO: implement for rectangle selections
@@ -275,16 +289,29 @@ impl App {
                     table
                         .csv_table
                         .set(table.selection.primary, content[0][0].clone());
-                    table.selection_yanked = None;
+                    table.selection.opposite = None;
+                    *mode = MainMode::Normal;
                 }
             }
             _ => {}
         }
-        Ok(false)
+        if let InputState::Main(InputModeMain {
+            combo,
+            collect_all,
+            input_buffer,
+            ..
+        }) = &mut self.state.input
+            && !keep_combo
+        {
+            *combo = Default::default();
+            *collect_all = Default::default();
+            *input_buffer = Default::default();
+        }
+        Ok(())
     }
 
     fn handle_console_input(&mut self, key: KeyEvent) -> Result<()> {
-        let InputState::Console(Console { mode, content }) = &mut self.state.input else {
+        let InputState::Console(InputModeConsole { mode, content }) = &mut self.state.input else {
             unreachable!();
         };
         match (key.modifiers, key.code) {
@@ -509,7 +536,7 @@ impl AppState {
             frame.render_widget(console_message, main_console);
         }
 
-        frame.render_widget(StatusWidget { state: self }, status);
+        frame.render_widget(StatusWidget(self), status);
     }
 }
 
@@ -521,7 +548,6 @@ struct CsvTableWidgetStyle {
     normal_10: Style,
     normal_11: Style,
     primary_selection: Style,
-    secondary_selection: Style,
     yanked: Style,
     label_normal: Style,
     label_primary_selection: Style,
@@ -530,12 +556,11 @@ struct CsvTableWidgetStyle {
 impl Default for CsvTableWidgetStyle {
     fn default() -> Self {
         Self {
-            normal_00: Style::new().bg(Color::Rgb(57, 57, 57)).fg(Color::White),
-            normal_01: Style::new().bg(Color::Rgb(60, 60, 60)).fg(Color::White),
-            normal_10: Style::new().bg(Color::Rgb(67, 67, 67)).fg(Color::White),
-            normal_11: Style::new().bg(Color::Rgb(70, 70, 70)).fg(Color::White),
+            normal_00: Style::new().bg(Color::Rgb(30, 30, 30)).fg(Color::White),
+            normal_01: Style::new().bg(Color::Rgb(31, 31, 31)).fg(Color::White),
+            normal_10: Style::new().bg(Color::Rgb(39, 39, 39)).fg(Color::White),
+            normal_11: Style::new().bg(Color::Rgb(41, 41, 41)).fg(Color::White),
             primary_selection: Style::new().bg(Color::LightBlue).fg(Color::Black),
-            secondary_selection: Style::new().bg(Color::Blue).fg(Color::Black),
             yanked: Style::new().fg(Color::Green),
             label_normal: Style::new().bg(Color::Black).fg(Color::Rgb(160, 160, 160)),
             label_primary_selection: Style::new().bg(Color::Black).fg(Color::LightBlue),
@@ -664,12 +689,11 @@ impl Widget for &CsvTableView {
             normal_10,
             normal_11,
             primary_selection,
-            secondary_selection,
             yanked,
             ..
         } = style;
 
-        let Selection { selected, primary } = selection;
+        let Selection { opposite, primary } = selection;
         let col_constraints = (0..*visible_cols).map(|_| Constraint::Length(*cell_width));
         let row_constraints = (0..*visible_rows).map(|_| Constraint::Length(*cell_height));
         let horizontal = Layout::horizontal(col_constraints).spacing(0);
@@ -685,52 +709,130 @@ impl Widget for &CsvTableView {
         //     .flat_map(|row| row.layout_vec(&horizontal));
 
         for (i, cell) in cells.enumerate() {
-            let row = i / visible_cols;
-            let col = i % visible_cols;
-            let cell_location = *top_left_cell_location + CellLocation { row, col };
+            let row_view = i / visible_cols;
+            let col_view = i % visible_cols;
+            let cell_location @ CellLocation { col, .. } = *top_left_cell_location
+                + CellLocation {
+                    row: row_view,
+                    col: col_view,
+                };
             let text = csv_table.get(cell_location).unwrap_or_default();
 
-            let style = if *primary == cell_location {
-                primary_selection
-            } else if selected.contains(&cell_location) {
-                secondary_selection
-            } else {
-                match (row % 2, col % 2) {
-                    (0, 0) => normal_00,
-                    (0, 1) => normal_01,
-                    (1, 0) => normal_10,
-                    (1, 1) => normal_11,
-                    _ => unreachable!(),
-                }
+            let normal = match (row_view % 2, col_view % 2) {
+                (0, 0) => normal_00,
+                (0, 1) => normal_01,
+                (1, 0) => normal_10,
+                (1, 1) => normal_11,
+                _ => unreachable!(),
             };
 
-            let area = if let Some(selection) = &selection_yanked
-                && (selection.primary == cell_location
-                    || selection.selected.contains(&cell_location))
+            let is_yanked = selection_yanked
+                .map(|Selection { primary, opposite }| {
+                    opposite
+                        .map(|o| cell_location.in_rect(primary, o))
+                        .unwrap_or(cell_location == primary)
+                })
+                .unwrap_or_default();
+
+            let style = if *primary == cell_location {
+                *primary_selection
+            } else if opposite
+                .map(|opposite| cell_location.in_rect(*primary, opposite))
+                .unwrap_or_default()
+                && let Some(primary_bg) = primary_selection.bg
+                && let Some(normal_bg) = normal.bg
             {
-                let [left, main, right] = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Length(1), // links
-                        Constraint::Min(0),    // Mitte: Text, flexibel
-                        Constraint::Length(1), // rechts
-                    ])
-                    .areas(cell);
+                let mut style = Style::new().bg(primary_bg.mix(normal_bg, 0.7, false).mix(
+                    Color::Rgb(0, 0, 0),
+                    0.1,
+                    false,
+                ));
+                if let Some(primary_fg) = primary_selection.fg {
+                    style = style.fg(primary_fg);
+                }
+                style
+            } else if is_yanked
+                && let Some(Selection { primary, opposite }) = selection_yanked
+                && opposite
+                    .map(|o| cell_location.in_rect(*primary, o))
+                    .unwrap_or(cell_location == *primary)
+            {
+                let bg = yanked.bg.or(yanked.fg).unwrap_or(Color::LightGreen);
+                let bg = normal.bg.map(|n| bg.mix(n, 0.9, false)).unwrap_or(bg);
+                normal.bg(bg)
+            } else {
+                *normal
+            };
+
+            // Border for yanked left and right
+            let area = if is_yanked
+                && let Some(Selection {
+                    primary:
+                        CellLocation {
+                            col: col_primary, ..
+                        },
+                    opposite,
+                }) = &selection_yanked
+                && (*col_primary == col || opposite.map(|o| o.col == col).unwrap_or_default())
+            {
+                let (left, main, right) = if let Some(CellLocation {
+                    col: col_opposite, ..
+                }) = opposite
+                {
+                    if *col_primary == *col_opposite {
+                        let [left, main, right] = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([
+                                Constraint::Length(1),
+                                Constraint::Min(0),
+                                Constraint::Length(1),
+                            ])
+                            .areas(cell);
+                        (Some(left), main, Some(right))
+                    } else if col == (*col_primary).min(*col_opposite) {
+                        let [left, main] = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([Constraint::Length(1), Constraint::Min(0)])
+                            .areas(cell);
+                        (Some(left), main, None)
+                    } else {
+                        let [main, right] = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([Constraint::Min(0), Constraint::Length(1)])
+                            .areas(cell);
+                        (None, main, Some(right))
+                    }
+                } else {
+                    let [left, main, right] = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Length(1),
+                            Constraint::Min(0),
+                            Constraint::Length(1),
+                        ])
+                        .areas(cell);
+                    (Some(left), main, Some(right))
+                };
+
                 let yank_style = style.patch(*yanked);
-                // Left border
-                for y in 0..left.height {
-                    buf.cell_mut(Position::new(left.x, left.y + y))
-                        .unwrap()
-                        .set_symbol(symbols::HALF_BLOCK_LEFT)
-                        .set_style(yank_style);
+                if let Some(left) = left {
+                    // Left border
+                    for y in 0..left.height {
+                        buf.cell_mut(Position::new(left.x, left.y + y))
+                            .unwrap()
+                            .set_symbol(symbols::HALF_BLOCK_LEFT)
+                            .set_style(yank_style);
+                    }
                 }
 
-                // Right border
-                for y in 0..right.height {
-                    buf.cell_mut(Position::new(right.x, right.y + y))
-                        .unwrap()
-                        .set_symbol(symbols::HALF_BLOCK_RIGHT)
-                        .set_style(yank_style);
+                if let Some(right) = right {
+                    // Right border
+                    for y in 0..right.height {
+                        buf.cell_mut(Position::new(right.x, right.y + y))
+                            .unwrap()
+                            .set_symbol(symbols::HALF_BLOCK_RIGHT)
+                            .set_style(yank_style);
+                    }
                 }
                 main
             } else {
@@ -739,7 +841,7 @@ impl Widget for &CsvTableView {
 
             Paragraph::new(text)
                 .alignment(Alignment::Center)
-                .style(*style)
+                .style(style)
                 .render(area, buf);
         }
     }
@@ -805,17 +907,17 @@ impl Widget for &ConsoleMessage {
 }
 
 #[derive(Clone, Debug)]
-struct Console {
+struct InputModeConsole {
     mode: ConsoleBarMode,
     content: String,
 }
 
-impl Widget for &Console {
+impl Widget for &InputModeConsole {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        let Console { mode, content } = self;
+        let InputModeConsole { mode, content } = self;
         let prefix = match mode {
             ConsoleBarMode::Console => ":",
             ConsoleBarMode::CellInput => ">",
@@ -933,47 +1035,54 @@ impl<'a> Widget for RowLabelsWidget<'a> {
 
 #[derive(Clone, Debug)]
 enum InputState {
-    Normal(Normal),
-    Console(Console),
+    Main(InputModeMain),
+    Console(InputModeConsole),
 }
 
 impl Default for InputState {
     fn default() -> Self {
-        Self::Normal(Normal::default())
+        Self::Main(InputModeMain::default())
     }
 }
 
 #[derive(Clone, Debug, Default)]
-struct Normal {
+struct InputModeMain {
+    mode: MainMode,
     combo: Option<Combo>,
     collect_all: bool,
     input_buffer: String,
 }
 
-struct StatusWidget<'a> {
-    state: &'a AppState,
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum MainMode {
+    #[default]
+    Normal,
+    Visual,
 }
+struct StatusWidget<'a>(&'a AppState);
 
 impl<'a> Widget for StatusWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        let StatusWidget { state } = self;
-        let [mode_area, coords_area] =
-            Layout::horizontal([Constraint::Length(10), Constraint::Length(8)]).areas(area);
-
+        let StatusWidget(state) = self;
         let (mode, buffer_str, combo_str) = match &state.input {
-            InputState::Normal(Normal {
+            InputState::Main(InputModeMain {
+                mode,
                 combo,
                 input_buffer,
                 ..
-            }) => (
-                None,
-                Some(input_buffer),
-                combo.as_ref().map(ToString::to_string),
-            ),
-            InputState::Console(Console { mode, .. }) => match mode {
+            }) => {
+                let disp = (*mode == MainMode::Visual)
+                    .then(|| ("SEL", Style::default().bg(Color::Blue).fg(Color::Black)));
+                (
+                    disp,
+                    Some(input_buffer),
+                    combo.as_ref().map(ToString::to_string),
+                )
+            }
+            InputState::Console(InputModeConsole { mode, .. }) => match mode {
                 ConsoleBarMode::Console => (Some(("CON", Style::default())), None, None),
                 ConsoleBarMode::CellInput => (
                     Some(("INS", Style::default().bg(Color::Yellow).fg(Color::Black))),
@@ -982,25 +1091,25 @@ impl<'a> Widget for StatusWidget<'a> {
                 ),
             },
         };
+        let [mode_area, buffer_area, combo_area, coords_area] = Layout::horizontal([
+            Constraint::Length(3),
+            Constraint::Length(9),
+            Constraint::Length(1),
+            Constraint::Length(8),
+        ])
+        .areas(area);
+        if let Some((mode_str, style)) = mode {
+            Paragraph::new(mode_str).style(style).render(mode_area, buf);
+        }
 
-        if let Some((mode, style)) = mode {
-            let [_, mode_area] =
-                Layout::horizontal([Constraint::Percentage(100), Constraint::Length(3)])
-                    .areas(mode_area);
-            Paragraph::new(mode).style(style).render(mode_area, buf);
-        } else {
-            let [buffer_area, combo_area] =
-                Layout::horizontal([Constraint::Length(9), Constraint::Length(1)]).areas(mode_area);
+        if let Some(buffer_str) = buffer_str {
+            Paragraph::new(buffer_str.as_str())
+                .alignment(Alignment::Right)
+                .render(buffer_area, buf);
+        }
 
-            if let Some(buffer_str) = buffer_str {
-                Paragraph::new(buffer_str.as_str())
-                    .alignment(Alignment::Right)
-                    .render(buffer_area, buf);
-            }
-
-            if let Some(combo_str) = combo_str {
-                Paragraph::new(combo_str.as_str()).render(combo_area, buf);
-            }
+        if let Some(combo_str) = combo_str {
+            Paragraph::new(combo_str.as_str()).render(combo_area, buf);
         }
 
         if let Some(table) = &state.table {
@@ -1042,10 +1151,10 @@ struct Args {
     file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 struct Selection {
-    selected: Vec<CellLocation>,
     primary: CellLocation,
+    opposite: Option<CellLocation>,
 }
 
 #[derive(Debug, Clone, Default)]

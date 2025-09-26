@@ -177,8 +177,18 @@ impl CellLocation {
         }
         col_str
     }
+
     pub(crate) fn row_index_to_id(row: usize) -> String {
         (row + 1).to_string()
+    }
+
+    pub(crate) fn in_rect(self, corner_a: CellLocation, corner_b: CellLocation) -> bool {
+        let row_min = corner_a.row.min(corner_b.row);
+        let row_max = corner_a.row.max(corner_b.row);
+        let col_min = corner_a.col.min(corner_b.col);
+        let col_max = corner_a.col.max(corner_b.col);
+
+        self.row >= row_min && self.row <= row_max && self.col >= col_min && self.col <= col_max
     }
 }
 
