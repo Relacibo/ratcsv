@@ -7,7 +7,13 @@ For now the keybinds are fixed and inspired by the Helix keybinds.
 ## Install
 
 ```bash
-cargo install --locked --git https://github.com/Relacibo/ratcsv.git
+cargo install --locked ratcsv
+```
+
+## Usage
+
+```bash
+rat --help
 ```
 
 ## TODO
