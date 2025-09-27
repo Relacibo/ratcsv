@@ -143,12 +143,58 @@ impl CellLocation {
     }
 
     pub(crate) fn in_rect(self, corner_a: CellLocation, corner_b: CellLocation) -> bool {
-        let row_min = corner_a.row.min(corner_b.row);
-        let row_max = corner_a.row.max(corner_b.row);
-        let col_min = corner_a.col.min(corner_b.col);
-        let col_max = corner_a.col.max(corner_b.col);
+        let CellLocation {
+            row: row_a,
+            col: col_a,
+        } = corner_a;
+        let CellLocation {
+            row: row_b,
+            col: col_b,
+        } = corner_b;
 
-        self.row >= row_min && self.row <= row_max && self.col >= col_min && self.col <= col_max
+        let (row_start, row_end) = if row_a < row_b {
+            (row_a, row_b)
+        } else {
+            (row_b, row_a)
+        };
+
+        let (col_start, col_end) = if col_a < col_b {
+            (col_a, col_b)
+        } else {
+            (col_b, col_a)
+        };
+
+        self.row >= row_start && self.row <= row_end && self.col >= col_start && self.col <= col_end
+    }
+
+    pub(crate) fn rect_iter(self, opposite: CellLocation) -> impl Iterator<Item = CellLocation> {
+        let CellLocation {
+            row: row_a,
+            col: col_a,
+        } = self;
+        let CellLocation {
+            row: row_b,
+            col: col_b,
+        } = opposite;
+
+        let (row_start, row_end) = if row_a < row_b {
+            (row_a, row_b)
+        } else {
+            (row_b, row_a)
+        };
+
+        let (col_start, col_end) = if col_a < col_b {
+            (col_a, col_b)
+        } else {
+            (col_b, col_a)
+        };
+
+        (row_start..=row_end)
+            .flat_map(move |r| (col_start..=col_end).map(move |c| CellLocation { row: r, col: c }))
+    }
+
+    pub(crate) fn get_column_count(self, opposite: CellLocation) -> usize {
+        self.col.abs_diff(opposite.col) + 1
     }
 }
 

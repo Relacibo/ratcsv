@@ -261,37 +261,73 @@ impl App {
                     content: Default::default(),
                 });
             }
+            (_, KeyCode::Char('Y'), None) => table.selection_yanked = None,
             (_, KeyCode::Char('y'), None) => {
-                // TODO: implement for rectangle selections
-                let content = table
-                    .csv_table
-                    .get(table.selection.primary)
-                    .map(ToOwned::to_owned);
-                let content = vec![vec![content]];
+                let Selection { primary, opposite } = table.selection;
+                let yank = if let Some(opposite) = opposite {
+                    let content = primary
+                        .rect_iter(opposite)
+                        .map(|c| table.csv_table.get(c).map(ToOwned::to_owned))
+                        .collect();
+                    Yank::Rectangle {
+                        cols: primary.get_column_count(opposite),
+                        content,
+                    }
+                } else {
+                    let content = table.csv_table.get(primary).map(ToOwned::to_owned);
+                    Yank::Single(content)
+                };
                 table.selection_yanked = Some(table.selection);
-                self.state.yank = Some(Yank::new(content));
+                self.state.yank = Some(yank);
                 table.selection.opposite = None;
                 *mode = MainMode::Normal;
             }
             (_, KeyCode::Char('d'), None) => {
-                // TODO: implement for rectangle selections
-                let content = table
-                    .csv_table
-                    .get(table.selection.primary)
-                    .map(ToOwned::to_owned);
-                let content = vec![vec![content]];
-                table.csv_table.set(table.selection.primary, None);
-                self.state.yank = Some(Yank::new(content));
+                let Selection { primary, opposite } = table.selection;
+                let yank = if let Some(opposite) = opposite {
+                    let mut content = Vec::default();
+                    for cell in primary.rect_iter(opposite) {
+                        content.push(table.csv_table.get(cell).map(ToOwned::to_owned));
+                        table.csv_table.set(cell, None);
+                    }
+                    Yank::Rectangle {
+                        cols: primary.get_column_count(opposite),
+                        content,
+                    }
+                } else {
+                    let content = table.csv_table.get(primary).map(ToOwned::to_owned);
+                    table.csv_table.set(primary, None);
+                    Yank::Single(content)
+                };
+                table.selection_yanked = None;
+                self.state.yank = Some(yank);
                 table.selection.opposite = None;
                 *mode = MainMode::Normal;
             }
             (_, KeyCode::Char('p'), None) => {
-                // TODO: implement for rectangle selections
-                if let Some(Yank { content, .. }) = &self.state.yank {
-                    table
-                        .csv_table
-                        .set(table.selection.primary, content[0][0].clone());
-                    table.selection.opposite = None;
+                let Selection { primary, opposite } = table.selection;
+                if let Some(yank) = &self.state.yank {
+                    match yank {
+                        Yank::Single(single) => {
+                            if let Some(opposite) = opposite {
+                                for cell in primary.rect_iter(opposite) {
+                                    table.csv_table.set(cell, single.clone());
+                                }
+                            } else {
+                                table.csv_table.set(primary, single.clone());
+                            }
+                        }
+                        Yank::Rectangle { cols, content } => {
+                            for (content, dst) in
+                                content.iter().zip(primary.rect_iter(CellLocation {
+                                    row: primary.row + content.len() / cols - 1,
+                                    col: primary.col + cols - 1,
+                                }))
+                            {
+                                table.csv_table.set(dst, content.clone());
+                            }
+                        }
+                    }
                     *mode = MainMode::Normal;
                 }
             }
@@ -1076,15 +1112,13 @@ struct Selection {
     opposite: Option<CellLocation>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Yank {
-    content: Vec<Vec<Option<String>>>,
-}
-
-impl Yank {
-    fn new(content: Vec<Vec<Option<String>>>) -> Self {
-        Self { content }
-    }
+#[derive(Debug, Clone)]
+enum Yank {
+    Single(Option<String>),
+    Rectangle {
+        cols: usize,
+        content: Vec<Option<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
