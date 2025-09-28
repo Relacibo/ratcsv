@@ -28,7 +28,7 @@ pub(crate) struct CsvBuffer {
     pub(crate) selection: Selection,
     pub(crate) selection_yanked: Option<Selection>,
     pub(crate) file: Option<PathBuf>,
-    saved_hash: u64,
+    saved_hash: Option<u64>,
 }
 
 impl Default for CsvBuffer {
@@ -43,7 +43,7 @@ impl Default for CsvBuffer {
             cell_width: 0,
             style: Default::default(),
             top_left_cell_location: Default::default(),
-            saved_hash: hash_table(&csv_table),
+            saved_hash: None,
             csv_table,
             selection: Default::default(),
             selection_yanked: Default::default(),
@@ -60,18 +60,20 @@ pub(crate) enum LoadOption {
 
 impl CsvBuffer {
     pub(crate) fn load(load_option: LoadOption, delimiter: Option<u8>) -> color_eyre::Result<Self> {
-        let (csv_table, file) = match load_option {
+        let (csv_table, file, saved_hash) = match load_option {
             LoadOption::File(path_buf) => {
                 let file = File::open(&path_buf)?;
-                (CsvTable::load(file, delimiter)?, Some(path_buf))
+                let csv_table = CsvTable::load(file, delimiter)?;
+                let hash = hash_table(&csv_table);
+                (csv_table, Some(path_buf), Some(hash))
             }
             LoadOption::Stdin => {
                 let stdin = stdin();
-                (CsvTable::load(stdin, delimiter)?, None)
+                (CsvTable::load(stdin, delimiter)?, None, None)
             }
         };
         let res = Self {
-            saved_hash: hash_table(&csv_table),
+            saved_hash,
             csv_table,
             file,
             ..Default::default()
@@ -103,14 +105,21 @@ impl CsvBuffer {
         }
         let mut file = File::create(&file_path)?;
         self.csv_table.normalize_and_save(&mut file)?;
-        self.saved_hash = hash_table(&self.csv_table);
+        self.saved_hash = Some(hash_table(&self.csv_table));
         let file_path = file_path.into_owned();
         self.file = Some(file_path.clone());
         Ok(file_path)
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
-        hash_table(&self.csv_table) != self.saved_hash
+        let Some(saved_hash) = self.saved_hash else {
+            return !self.is_empty();
+        };
+
+        hash_table(&self.csv_table) != saved_hash
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.csv_table.is_empty()
     }
 
     pub(crate) fn move_selection(&mut self, direction: MoveDirection, n: usize) {

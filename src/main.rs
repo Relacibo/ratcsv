@@ -492,11 +492,10 @@ impl App {
                 self.state.console_message = Some(ConsoleMessage::new(message));
             }
             ["delimiter", d, ..] => {
-                table.csv_table.delimiter = match *d {
-                    "unset" => None,
-                    r"\t" => Some(b'\t'),
-                    s if s.len() == 1 => Some(s.as_bytes()[0]),
-                    _ => table.csv_table.delimiter,
+                table.csv_table.delimiter = if *d == "unset" {
+                    None
+                } else {
+                    Some(delimiter_from_str(d)?)
                 };
             }
             ["save-path", ..] => {
@@ -525,7 +524,12 @@ impl App {
         } else {
             return Ok(());
         };
-        let table = CsvBuffer::load(load_option, delimiter.map(|d| d as u8))?;
+        let delimiter = if let Some(delimiter) = delimiter {
+            Some(delimiter_from_str(&delimiter)?)
+        } else {
+            None
+        };
+        let table = CsvBuffer::load(load_option, delimiter)?;
         self.state.table = Some(table);
         Ok(())
     }
@@ -534,6 +538,15 @@ impl App {
     fn quit(&mut self) {
         self.state.running = false;
     }
+}
+
+fn delimiter_from_str(d: &str) -> Result<u8> {
+    let res = match d {
+        r"\t" => b'\t',
+        s if s.len() == 1 => s.as_bytes()[0],
+        _ => bail!("Delimiter not allowed"),
+    };
+    Ok(res)
 }
 
 impl AppState {
@@ -1097,7 +1110,7 @@ struct Args {
     ///
     /// [default: ,]
     #[arg(short, long)]
-    delimiter: Option<char>,
+    delimiter: Option<String>,
     /// Read csv file from stdin
     #[arg(long, conflicts_with = "file")]
     stdin: bool,

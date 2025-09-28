@@ -101,6 +101,12 @@ impl CsvTable {
         wtr.flush()?;
         Ok(())
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows
+            .iter()
+            .all(|row| row.iter().all(|cell| cell.is_none()))
+    }
 }
 
 impl std::hash::Hash for CsvTable {
