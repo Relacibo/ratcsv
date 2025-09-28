@@ -25,6 +25,7 @@
 - [ ] Split window
 - [ ] Mark all labels on rows/cols of selection rectangle
 - [x] Throw errors in command handler instead of printing errors
+- [ ] Fix, asking not for saving, when having a new buffer and making changes
 
 ## BACKLOG
 - [ ] Maybe custom keybinds at some point
