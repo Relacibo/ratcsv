@@ -154,48 +154,22 @@ impl CsvTable {
 
         old_values
     }
-
+    #[allow(unused)]
     pub(crate) fn delete(&mut self, cell_location: CellLocation) -> Option<String> {
-        let CellLocation { row, col } = cell_location;
-
-        if let Some(row_vec) = self.rows.get_mut(row)
-            && col < row_vec.len()
-        {
-            return row_vec[col].take();
-        }
-        None
+        self.set(cell_location, None)
     }
 
+    #[allow(unused)]
     pub(crate) fn delete_rect(&mut self, rect: CellRect) -> Vec<Option<String>> {
-        let CellRect {
-            top_left_cell_location,
-            col_count,
-            row_count,
-        } = rect;
-        let mut old_values = Vec::with_capacity(col_count * row_count);
+        self.set_rect(rect, std::iter::repeat(None))
+    }
 
-        let required_rows = top_left_cell_location.row + row_count;
-        if self.rows.len() < required_rows {
-            self.rows.resize_with(required_rows, Vec::new);
-        }
-
-        for row_offset in 0..row_count {
-            let row_index = top_left_cell_location.row + row_offset;
-            let row = &mut self.rows[row_index];
-
-            // Stelle sicher, dass genug Spalten existieren
-            let required_cols = top_left_cell_location.col + col_count;
-            if row.len() < required_cols {
-                row.resize(required_cols, None);
-            }
-
-            for col_offset in 0..col_count {
-                let col_index = top_left_cell_location.col + col_offset;
-                old_values.push(row[col_index].take());
-            }
-        }
-
-        old_values
+    pub(crate) fn fill_rect(
+        &mut self,
+        rect: CellRect,
+        value: Option<String>,
+    ) -> Vec<Option<String>> {
+        self.set_rect(rect, std::iter::repeat(value))
     }
 
     pub(crate) fn normalize(&mut self) {

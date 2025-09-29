@@ -207,26 +207,35 @@ impl Undoee for CsvTable {
             UndoAction::ChangeCells {
                 mode,
                 rect,
-                from_values,
+                values: from_values,
             } => {
                 let to_values = self.set_rect(rect, from_values);
-                if mode == UndoChangeCellMode::Delete {
-                    return RedoAction::DeleteCells { rect };
+                if mode == UndoChangeCellMode::Fill {
+                    return RedoAction::FillCells {
+                        rect,
+                        value: to_values.first().cloned().flatten(),
+                    };
                 }
-                RedoAction::EditCells { rect, to_values }
+                RedoAction::EditCells {
+                    rect,
+                    values: to_values,
+                }
             }
             UndoAction::ChangeCell {
                 mode,
                 cell_location,
-                from_value,
+                value: from_value,
             } => {
                 let to_value = self.set(cell_location, from_value);
-                if mode == UndoChangeCellMode::Delete {
-                    return RedoAction::DeleteCell { cell_location };
+                if mode == UndoChangeCellMode::Fill {
+                    return RedoAction::FillCell {
+                        cell_location,
+                        value: to_value,
+                    };
                 }
                 RedoAction::EditCell {
                     cell_location,
-                    to_value,
+                    value: to_value,
                 }
             }
         }
@@ -234,39 +243,45 @@ impl Undoee for CsvTable {
 
     fn redo(&mut self, action: Self::RedoAction) -> Self::UndoAction {
         match action {
-            RedoAction::EditCells { to_values, rect } => {
+            RedoAction::EditCells {
+                values: to_values,
+                rect,
+            } => {
                 let from_values = self.set_rect(rect, to_values);
                 UndoAction::ChangeCells {
                     mode: UndoChangeCellMode::Edit,
                     rect,
-                    from_values,
+                    values: from_values,
                 }
             }
             RedoAction::EditCell {
                 cell_location,
-                to_value,
+                value: to_value,
             } => {
                 let from_value = self.set(cell_location, to_value);
                 UndoAction::ChangeCell {
                     mode: UndoChangeCellMode::Edit,
                     cell_location,
-                    from_value,
+                    value: from_value,
                 }
             }
-            RedoAction::DeleteCells { rect } => {
-                let from_values = self.delete_rect(rect);
+            RedoAction::FillCells { rect, value } => {
+                let from_values = self.fill_rect(rect, value);
                 UndoAction::ChangeCells {
                     mode: UndoChangeCellMode::Edit,
                     rect,
-                    from_values,
+                    values: from_values,
                 }
             }
-            RedoAction::DeleteCell { cell_location } => {
-                let from_value = self.delete(cell_location);
+            RedoAction::FillCell {
+                cell_location,
+                value,
+            } => {
+                let from_value = self.set(cell_location, value);
                 UndoAction::ChangeCell {
                     mode: UndoChangeCellMode::Edit,
                     cell_location,
-                    from_value,
+                    value: from_value,
                 }
             }
         }
@@ -278,36 +293,38 @@ pub(crate) enum UndoAction {
     ChangeCells {
         mode: UndoChangeCellMode,
         rect: CellRect,
-        from_values: Vec<Option<String>>,
+        values: Vec<Option<String>>,
     },
     ChangeCell {
         mode: UndoChangeCellMode,
         cell_location: CellLocation,
-        from_value: Option<String>,
+        value: Option<String>,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UndoChangeCellMode {
     Edit,
-    Delete,
+    Fill,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum RedoAction {
     EditCells {
         rect: CellRect,
-        to_values: Vec<Option<String>>,
+        values: Vec<Option<String>>,
     },
     EditCell {
         cell_location: CellLocation,
-        to_value: Option<String>,
+        value: Option<String>,
     },
-    DeleteCells {
+    FillCells {
         rect: CellRect,
+        value: Option<String>,
     },
-    DeleteCell {
+    FillCell {
         cell_location: CellLocation,
+        value: Option<String>,
     },
 }
 

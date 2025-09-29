@@ -289,9 +289,9 @@ impl App {
                     let from_values = table.csv_table.delete_rect(rect);
 
                     table.undo_stack.push(UndoAction::ChangeCells {
-                        mode: buffer::UndoChangeCellMode::Delete,
+                        mode: buffer::UndoChangeCellMode::Fill,
                         rect,
-                        from_values: from_values.clone(),
+                        values: from_values.clone(),
                     });
 
                     Yank::Rectangle {
@@ -301,9 +301,9 @@ impl App {
                 } else {
                     let from_value = table.csv_table.delete(primary);
                     table.undo_stack.push(UndoAction::ChangeCell {
-                        mode: buffer::UndoChangeCellMode::Delete,
+                        mode: buffer::UndoChangeCellMode::Fill,
                         cell_location: primary,
-                        from_value: from_value.clone(),
+                        value: from_value.clone(),
                     });
 
                     Yank::Single(from_value)
@@ -324,18 +324,17 @@ impl App {
                                 let from_values = table
                                     .csv_table
                                     .set_rect(rect, std::iter::repeat(single.clone()));
-                                // TODO: maybe add UndoAction::FillCells
                                 table.undo_stack.push(UndoAction::ChangeCells {
-                                    mode: buffer::UndoChangeCellMode::Edit,
+                                    mode: buffer::UndoChangeCellMode::Fill,
                                     rect,
-                                    from_values: from_values.clone(),
+                                    values: from_values.clone(),
                                 });
                             } else {
                                 let from_value = table.csv_table.set(primary, single.clone());
                                 table.undo_stack.push(UndoAction::ChangeCell {
                                     mode: UndoChangeCellMode::Edit,
                                     cell_location: primary,
-                                    from_value,
+                                    value: from_value,
                                 });
                             }
                         }
@@ -350,7 +349,7 @@ impl App {
                             table.undo_stack.push(UndoAction::ChangeCells {
                                 mode: buffer::UndoChangeCellMode::Edit,
                                 rect,
-                                from_values: from_values.clone(),
+                                values: from_values.clone(),
                             });
                         }
                     }
@@ -392,7 +391,7 @@ impl App {
                             table.undo_stack.push(UndoAction::ChangeCell {
                                 mode: UndoChangeCellMode::Edit,
                                 cell_location: table.selection.primary,
-                                from_value,
+                                value: from_value,
                             });
                         }
                         Ok(())
