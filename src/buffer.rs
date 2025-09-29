@@ -11,7 +11,8 @@ use color_eyre::eyre::{bail, eyre};
 
 use crate::{
     CsvTableWidgetStyle, MoveDirection, Selection,
-    content::{CellLocation, CellLocationDelta, CsvTable},
+    content::{CellLocation, CellLocationDelta, CellRect, CsvTable},
+    undo::{UndoStack, Undoee},
 };
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,7 @@ pub(crate) struct CsvBuffer {
     pub(crate) selection: Selection,
     pub(crate) selection_yanked: Option<Selection>,
     pub(crate) file: Option<PathBuf>,
+    pub(crate) undo_stack: UndoStack<CsvTable>,
     saved_hash: Option<u64>,
 }
 
@@ -48,6 +50,7 @@ impl Default for CsvBuffer {
             selection: Default::default(),
             selection_yanked: Default::default(),
             file: None,
+            undo_stack: UndoStack::new(),
         }
     }
 }
@@ -185,6 +188,127 @@ impl CsvBuffer {
             self.cell_width = self.cell_width_wanted + available_cols % self.cell_width_wanted;
         }
     }
+
+    pub(crate) fn undo(&mut self) {
+        self.undo_stack.undo(&mut self.csv_table);
+    }
+
+    pub(crate) fn redo(&mut self) {
+        self.undo_stack.redo(&mut self.csv_table);
+    }
+}
+
+impl Undoee for CsvTable {
+    type UndoAction = UndoAction;
+    type RedoAction = RedoAction;
+
+    fn undo(&mut self, action: Self::UndoAction) -> Self::RedoAction {
+        match action {
+            UndoAction::ChangeCells {
+                mode,
+                rect,
+                from_values,
+            } => {
+                let to_values = self.set_rect(rect, from_values);
+                if mode == UndoChangeCellMode::Delete {
+                    return RedoAction::DeleteCells { rect };
+                }
+                RedoAction::EditCells { rect, to_values }
+            }
+            UndoAction::ChangeCell {
+                mode,
+                cell_location,
+                from_value,
+            } => {
+                let to_value = self.set(cell_location, from_value);
+                if mode == UndoChangeCellMode::Delete {
+                    return RedoAction::DeleteCell { cell_location };
+                }
+                RedoAction::EditCell {
+                    cell_location,
+                    to_value,
+                }
+            }
+        }
+    }
+
+    fn redo(&mut self, action: Self::RedoAction) -> Self::UndoAction {
+        match action {
+            RedoAction::EditCells { to_values, rect } => {
+                let from_values = self.set_rect(rect, to_values);
+                UndoAction::ChangeCells {
+                    mode: UndoChangeCellMode::Edit,
+                    rect,
+                    from_values,
+                }
+            }
+            RedoAction::EditCell {
+                cell_location,
+                to_value,
+            } => {
+                let from_value = self.set(cell_location, to_value);
+                UndoAction::ChangeCell {
+                    mode: UndoChangeCellMode::Edit,
+                    cell_location,
+                    from_value,
+                }
+            }
+            RedoAction::DeleteCells { rect } => {
+                let from_values = self.delete_rect(rect);
+                UndoAction::ChangeCells {
+                    mode: UndoChangeCellMode::Edit,
+                    rect,
+                    from_values,
+                }
+            }
+            RedoAction::DeleteCell { cell_location } => {
+                let from_value = self.delete(cell_location);
+                UndoAction::ChangeCell {
+                    mode: UndoChangeCellMode::Edit,
+                    cell_location,
+                    from_value,
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum UndoAction {
+    ChangeCells {
+        mode: UndoChangeCellMode,
+        rect: CellRect,
+        from_values: Vec<Option<String>>,
+    },
+    ChangeCell {
+        mode: UndoChangeCellMode,
+        cell_location: CellLocation,
+        from_value: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UndoChangeCellMode {
+    Edit,
+    Delete,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RedoAction {
+    EditCells {
+        rect: CellRect,
+        to_values: Vec<Option<String>>,
+    },
+    EditCell {
+        cell_location: CellLocation,
+        to_value: Option<String>,
+    },
+    DeleteCells {
+        rect: CellRect,
+    },
+    DeleteCell {
+        cell_location: CellLocation,
+    },
 }
 
 fn hash_table(table: &CsvTable) -> u64 {

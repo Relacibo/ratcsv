@@ -2,6 +2,7 @@ mod buffer;
 pub(crate) mod color_ext;
 mod content;
 pub(crate) mod symbols;
+pub(crate) mod undo;
 
 use clap::Parser;
 use color_eyre::{
@@ -26,9 +27,9 @@ use std::{
 };
 
 use crate::{
-    buffer::{CsvBuffer, LoadOption},
+    buffer::{CsvBuffer, LoadOption, UndoAction, UndoChangeCellMode},
     color_ext::ColorExt,
-    content::CellLocation,
+    content::{CellLocation, CellRect},
 };
 
 const LOGO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/logo.txt"));
@@ -265,12 +266,11 @@ impl App {
             (_, KeyCode::Char('y'), None) => {
                 let Selection { primary, opposite } = table.selection;
                 let yank = if let Some(opposite) = opposite {
-                    let content = primary
-                        .rect_iter(opposite)
-                        .map(|c| table.csv_table.get(c).map(ToOwned::to_owned))
-                        .collect();
+                    let content = table
+                        .csv_table
+                        .get_rect_cloned(CellRect::from_opposite_cell_locations(primary, opposite));
                     Yank::Rectangle {
-                        cols: primary.get_column_count(opposite),
+                        col_count: primary.get_column_count(opposite),
                         content,
                     }
                 } else {
@@ -285,19 +285,28 @@ impl App {
             (_, KeyCode::Char('d'), None) => {
                 let Selection { primary, opposite } = table.selection;
                 let yank = if let Some(opposite) = opposite {
-                    let mut content = Vec::default();
-                    for cell in primary.rect_iter(opposite) {
-                        content.push(table.csv_table.get(cell).map(ToOwned::to_owned));
-                        table.csv_table.set(cell, None);
-                    }
+                    let rect = CellRect::from_opposite_cell_locations(primary, opposite);
+                    let from_values = table.csv_table.delete_rect(rect);
+
+                    table.undo_stack.push(UndoAction::ChangeCells {
+                        mode: buffer::UndoChangeCellMode::Delete,
+                        rect,
+                        from_values: from_values.clone(),
+                    });
+
                     Yank::Rectangle {
-                        cols: primary.get_column_count(opposite),
-                        content,
+                        col_count: primary.get_column_count(opposite),
+                        content: from_values,
                     }
                 } else {
-                    let content = table.csv_table.get(primary).map(ToOwned::to_owned);
-                    table.csv_table.set(primary, None);
-                    Yank::Single(content)
+                    let from_value = table.csv_table.delete(primary);
+                    table.undo_stack.push(UndoAction::ChangeCell {
+                        mode: buffer::UndoChangeCellMode::Delete,
+                        cell_location: primary,
+                        from_value: from_value.clone(),
+                    });
+
+                    Yank::Single(from_value)
                 };
                 table.selection_yanked = None;
                 self.state.yank = Some(yank);
@@ -310,27 +319,46 @@ impl App {
                     match yank {
                         Yank::Single(single) => {
                             if let Some(opposite) = opposite {
-                                for cell in primary.rect_iter(opposite) {
-                                    table.csv_table.set(cell, single.clone());
-                                }
+                                let rect =
+                                    CellRect::from_opposite_cell_locations(primary, opposite);
+                                let from_values = table
+                                    .csv_table
+                                    .set_rect(rect, std::iter::repeat(single.clone()));
+                                // TODO: maybe add UndoAction::FillCells
+                                table.undo_stack.push(UndoAction::ChangeCells {
+                                    mode: buffer::UndoChangeCellMode::Edit,
+                                    rect,
+                                    from_values: from_values.clone(),
+                                });
                             } else {
-                                table.csv_table.set(primary, single.clone());
+                                let from_value = table.csv_table.set(primary, single.clone());
+                                table.undo_stack.push(UndoAction::ChangeCell {
+                                    mode: UndoChangeCellMode::Edit,
+                                    cell_location: primary,
+                                    from_value,
+                                });
                             }
                         }
-                        Yank::Rectangle { cols, content } => {
-                            for (content, dst) in
-                                content.iter().zip(primary.rect_iter(CellLocation {
-                                    row: primary.row + content.len() / cols - 1,
-                                    col: primary.col + cols - 1,
-                                }))
-                            {
-                                table.csv_table.set(dst, content.clone());
-                            }
+                        Yank::Rectangle { col_count, content } => {
+                            let rect = CellRect {
+                                top_left_cell_location: primary,
+                                col_count: *col_count,
+                                row_count: content.len() / col_count,
+                            };
+                            let from_values =
+                                table.csv_table.set_rect(rect, content.iter().cloned());
+                            table.undo_stack.push(UndoAction::ChangeCells {
+                                mode: buffer::UndoChangeCellMode::Edit,
+                                rect,
+                                from_values: from_values.clone(),
+                            });
                         }
                     }
                     *mode = MainMode::Normal;
                 }
             }
+            (_, KeyCode::Char('U'), None) => table.redo(),
+            (_, KeyCode::Char('u'), None) => table.undo(),
             _ => {}
         }
         if let InputState::Main(InputModeMain {
@@ -359,7 +387,13 @@ impl App {
                     ConsoleBarMode::Console => self.try_execute_command(&content),
                     ConsoleBarMode::CellInput => {
                         if let Some(table) = &mut self.state.table {
-                            table.csv_table.set(table.selection.primary, Some(content));
+                            let from_value =
+                                table.csv_table.set(table.selection.primary, Some(content));
+                            table.undo_stack.push(UndoAction::ChangeCell {
+                                mode: UndoChangeCellMode::Edit,
+                                cell_location: table.selection.primary,
+                                from_value,
+                            });
                         }
                         Ok(())
                     }
@@ -524,11 +558,6 @@ impl App {
         } else {
             return Ok(());
         };
-        let delimiter = if let Some(delimiter) = delimiter {
-            Some(delimiter_from_str(&delimiter)?)
-        } else {
-            None
-        };
         let table = CsvBuffer::load(load_option, delimiter)?;
         self.state.table = Some(table);
         Ok(())
@@ -538,15 +567,6 @@ impl App {
     fn quit(&mut self) {
         self.state.running = false;
     }
-}
-
-fn delimiter_from_str(d: &str) -> Result<u8> {
-    let res = match d {
-        r"\t" => b'\t',
-        s if s.len() == 1 => s.as_bytes()[0],
-        _ => bail!("Delimiter not allowed"),
-    };
-    Ok(res)
 }
 
 impl AppState {
@@ -697,7 +717,10 @@ impl Widget for MainTableWidget<'_> {
             let is_yanked = selection_yanked
                 .map(|Selection { primary, opposite }| {
                     opposite
-                        .map(|o| cell_location.in_rect(primary, o))
+                        .map(|o| {
+                            CellRect::from_opposite_cell_locations(primary, o)
+                                .contains(cell_location)
+                        })
                         .unwrap_or(cell_location == primary)
                 })
                 .unwrap_or_default();
@@ -705,7 +728,10 @@ impl Widget for MainTableWidget<'_> {
             let style = if *primary == cell_location {
                 *primary_selection
             } else if opposite
-                .map(|opposite| cell_location.in_rect(*primary, opposite))
+                .map(|opposite| {
+                    CellRect::from_opposite_cell_locations(*primary, opposite)
+                        .contains(cell_location)
+                })
                 .unwrap_or_default()
                 && let Some(primary_bg) = primary_selection.bg
                 && let Some(normal_bg) = normal.bg
@@ -722,7 +748,9 @@ impl Widget for MainTableWidget<'_> {
             } else if is_yanked
                 && let Some(Selection { primary, opposite }) = selection_yanked
                 && opposite
-                    .map(|o| cell_location.in_rect(*primary, o))
+                    .map(|o| {
+                        CellRect::from_opposite_cell_locations(*primary, o).contains(cell_location)
+                    })
                     .unwrap_or(cell_location == *primary)
             {
                 let bg = yanked.bg.or(yanked.fg).unwrap_or(Color::LightGreen);
@@ -1109,8 +1137,8 @@ struct Args {
     /// delimiter used for the FILE
     ///
     /// [default: ,]
-    #[arg(short, long)]
-    delimiter: Option<String>,
+    #[arg(short, long, value_parser = delimiter_from_str)]
+    delimiter: Option<u8>,
     /// Read csv file from stdin
     #[arg(long, conflicts_with = "file")]
     stdin: bool,
@@ -1129,7 +1157,7 @@ struct Selection {
 enum Yank {
     Single(Option<String>),
     Rectangle {
-        cols: usize,
+        col_count: usize,
         content: Vec<Option<String>>,
     },
 }
@@ -1241,4 +1269,13 @@ impl FromStr for CsvJump {
         }
         Ok(Self { sign, row, col })
     }
+}
+
+fn delimiter_from_str(d: &str) -> Result<u8> {
+    let res = match d {
+        r"\t" => b'\t',
+        s if s.len() == 1 => s.as_bytes()[0],
+        _ => bail!(r#"Delimiter not allowed. Use "\t" or one ASCII letter"#),
+    };
+    Ok(res)
 }

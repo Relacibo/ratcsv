@@ -40,23 +40,162 @@ impl CsvTable {
         self.rows.get(location.row)?.get(location.col)?.as_deref()
     }
 
-    pub(crate) fn set(&mut self, location: CellLocation, value: Option<String>) {
+    #[must_use]
+    pub(crate) fn set(&mut self, location: CellLocation, value: Option<String>) -> Option<String> {
         let CellLocation { row, col } = location;
         // Ensure, that columns and rows exist
         if self.rows.len() <= row {
             self.rows.resize_with(row + 1, Vec::new);
         }
-
         let row = &mut self.rows[row];
 
         if row.len() <= col {
             row.resize(col + 1, None);
         }
 
+        let old_value = row[col].take();
         let value = value.filter(|value| !value.is_empty());
 
         // We can just set the cell, because we ensured, that it exists
         row[col] = value;
+        old_value
+    }
+
+    #[allow(unused)]
+    pub(crate) fn get_rect(&self, rect: CellRect) -> Vec<Option<&str>> {
+        let CellRect {
+            top_left_cell_location,
+            col_count,
+            row_count,
+        } = rect;
+        let mut result = Vec::with_capacity(col_count * row_count);
+
+        for row_offset in 0..row_count {
+            let row_index = top_left_cell_location.row + row_offset;
+            let row = self.rows.get(row_index);
+
+            for col_offset in 0..col_count {
+                let col_index = top_left_cell_location.col + col_offset;
+                let value = row
+                    .and_then(|r| r.get(col_index))
+                    .and_then(|cell| cell.as_deref());
+                result.push(value);
+            }
+        }
+        result
+    }
+
+    pub(crate) fn get_rect_cloned(&self, rect: CellRect) -> Vec<Option<String>> {
+        let CellRect {
+            top_left_cell_location,
+            col_count,
+            row_count,
+        } = rect;
+        let mut result = Vec::with_capacity(col_count * row_count);
+
+        for row_offset in 0..row_count {
+            let row_index = top_left_cell_location.row + row_offset;
+            let row = self.rows.get(row_index);
+
+            for col_offset in 0..col_count {
+                let col_index = top_left_cell_location.col + col_offset;
+                let value = row.and_then(|r| r.get(col_index)).cloned().flatten();
+                result.push(value);
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub(crate) fn set_rect(
+        &mut self,
+        rect: CellRect,
+        new_values: impl IntoIterator<Item = Option<String>>,
+    ) -> Vec<Option<String>> {
+        let CellRect {
+            top_left_cell_location,
+            col_count,
+            row_count,
+        } = rect;
+
+        let mut old_values = Vec::with_capacity(rect.col_count * rect.row_count);
+
+        // Ensure enough rows
+        let required_rows = top_left_cell_location.row + row_count;
+        if self.rows.len() < required_rows {
+            self.rows.resize_with(required_rows, Vec::new);
+        }
+
+        let mut values_iter = new_values.into_iter();
+
+        for row_offset in 0..row_count {
+            let row_index = top_left_cell_location.row + row_offset;
+            let row = &mut self.rows[row_index];
+
+            // Ensure enough columns in this row
+            let required_cols = top_left_cell_location.col + col_count;
+            if row.len() < required_cols {
+                row.resize(required_cols, None);
+            }
+
+            for col_offset in 0..col_count {
+                let col_index = top_left_cell_location.col + col_offset;
+
+                let new_value = values_iter
+                    .next()
+                    .expect("iteration count must match new_values.len()");
+                let old_value = row[col_index].take();
+                let new_value = new_value.filter(|v| !v.is_empty());
+
+                row[col_index] = new_value;
+                old_values.push(old_value);
+            }
+        }
+
+        old_values
+    }
+
+    pub(crate) fn delete(&mut self, cell_location: CellLocation) -> Option<String> {
+        let CellLocation { row, col } = cell_location;
+
+        if let Some(row_vec) = self.rows.get_mut(row)
+            && col < row_vec.len()
+        {
+            return row_vec[col].take();
+        }
+        None
+    }
+
+    pub(crate) fn delete_rect(&mut self, rect: CellRect) -> Vec<Option<String>> {
+        let CellRect {
+            top_left_cell_location,
+            col_count,
+            row_count,
+        } = rect;
+        let mut old_values = Vec::with_capacity(col_count * row_count);
+
+        let required_rows = top_left_cell_location.row + row_count;
+        if self.rows.len() < required_rows {
+            self.rows.resize_with(required_rows, Vec::new);
+        }
+
+        for row_offset in 0..row_count {
+            let row_index = top_left_cell_location.row + row_offset;
+            let row = &mut self.rows[row_index];
+
+            // Stelle sicher, dass genug Spalten existieren
+            let required_cols = top_left_cell_location.col + col_count;
+            if row.len() < required_cols {
+                row.resize(required_cols, None);
+            }
+
+            for col_offset in 0..col_count {
+                let col_index = top_left_cell_location.col + col_offset;
+                old_values.push(row[col_index].take());
+            }
+        }
+
+        old_values
     }
 
     pub(crate) fn normalize(&mut self) {
@@ -123,6 +262,58 @@ impl std::hash::Hash for CsvTable {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CellRect {
+    pub(crate) top_left_cell_location: CellLocation,
+    pub(crate) col_count: usize,
+    pub(crate) row_count: usize,
+}
+
+impl CellRect {
+    pub(crate) fn from_opposite_cell_locations(
+        corner: CellLocation,
+        corner_opposite: CellLocation,
+    ) -> CellRect {
+        let CellLocation { row, col } = corner;
+        let CellLocation {
+            row: row_opposite,
+            col: col_opposite,
+        } = corner_opposite;
+
+        let (top_row, bottom_row) = if row < row_opposite {
+            (row, row_opposite)
+        } else {
+            (row_opposite, row)
+        };
+        let (left_col, right_col) = if col < col_opposite {
+            (col, col_opposite)
+        } else {
+            (col_opposite, col)
+        };
+
+        CellRect {
+            top_left_cell_location: CellLocation {
+                row: top_row,
+                col: left_col,
+            },
+            col_count: right_col - left_col + 1,
+            row_count: bottom_row - top_row + 1,
+        }
+    }
+
+    pub(crate) fn contains(&self, location: CellLocation) -> bool {
+        let top_row = self.top_left_cell_location.row;
+        let left_col = self.top_left_cell_location.col;
+
+        let bottom_row = top_row + self.row_count.saturating_sub(1);
+        let right_col = left_col + self.col_count.saturating_sub(1);
+
+        (top_row..=bottom_row).contains(&location.row)
+            && (left_col..=right_col).contains(&location.col)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CellLocation {
     pub(crate) row: usize,
@@ -146,57 +337,6 @@ impl CellLocation {
 
     pub(crate) fn row_index_to_id(row: usize) -> String {
         (row + 1).to_string()
-    }
-
-    pub(crate) fn in_rect(self, corner_a: CellLocation, corner_b: CellLocation) -> bool {
-        let CellLocation {
-            row: row_a,
-            col: col_a,
-        } = corner_a;
-        let CellLocation {
-            row: row_b,
-            col: col_b,
-        } = corner_b;
-
-        let (row_start, row_end) = if row_a < row_b {
-            (row_a, row_b)
-        } else {
-            (row_b, row_a)
-        };
-
-        let (col_start, col_end) = if col_a < col_b {
-            (col_a, col_b)
-        } else {
-            (col_b, col_a)
-        };
-
-        self.row >= row_start && self.row <= row_end && self.col >= col_start && self.col <= col_end
-    }
-
-    pub(crate) fn rect_iter(self, opposite: CellLocation) -> impl Iterator<Item = CellLocation> {
-        let CellLocation {
-            row: row_a,
-            col: col_a,
-        } = self;
-        let CellLocation {
-            row: row_b,
-            col: col_b,
-        } = opposite;
-
-        let (row_start, row_end) = if row_a < row_b {
-            (row_a, row_b)
-        } else {
-            (row_b, row_a)
-        };
-
-        let (col_start, col_end) = if col_a < col_b {
-            (col_a, col_b)
-        } else {
-            (col_b, col_a)
-        };
-
-        (row_start..=row_end)
-            .flat_map(move |r| (col_start..=col_end).map(move |c| CellLocation { row: r, col: c }))
     }
 
     pub(crate) fn get_column_count(self, opposite: CellLocation) -> usize {

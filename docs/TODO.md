@@ -11,7 +11,7 @@
   - [x] `c`
   - [x] `Shift` + `j` or `t`, etc.
   - [x] `j`, etc.
-- [ ] Undo/Redo
+- [x] Undo/Redo
 - [x] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
 - [x] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
@@ -25,7 +25,7 @@
 - [ ] Split window
 - [ ] Mark all labels on rows/cols of selection rectangle
 - [x] Throw errors in command handler instead of printing errors
-- [ ] Fix, asking not for saving, when having a new buffer and making changes
+- [x] Fix, asking not for saving, when having a new buffer and making changes
 
 ## BACKLOG
 - [ ] Maybe custom keybinds at some point
