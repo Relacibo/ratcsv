@@ -1,10 +1,11 @@
 [package]
 name = "ratcsv"
-version = "0.1.2-preview"
+version = "0.1.3-preview"
 description = "TUI CSV Editor"
 authors = ["Reinhard Bronner <reinhard_bronner@t-online.de>"]
 license = "MIT"
 edition = "2024"
+repository = "https://github.com/Relacibo/ratcsv"
 
 default-run = "rat"
 
