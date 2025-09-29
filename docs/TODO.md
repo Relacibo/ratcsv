@@ -2,33 +2,35 @@
 - [x] `write` should accept optional second argument for file name
 - [x] Select multiple cells
 - [x] Copy multiple cells
-- [ ] File picker for `open`, `write`
 - [x] Create new buffer with `n` command
-- [ ] Custom styles
 - [x] Cells should stretch over whole area
 - [x] Table should move with selection
+- [x] Undo/Redo
+- [x] Column/row labels
+- [x] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
+- [x] Special style for cells, that are both yanked and selected
+- [x] Unsaved changes recognititon, closable with `q`
+- [x] `w!` and `wq!` to force-write
+- [x] Save separator of read in file. Also have command to show and change the separator
+- [x] Throw errors in command handler instead of printing errors
+- [x] Fix, asking not for saving, when having a new buffer and making changes
+- [ ] File picker for `open`, `write`
+- [ ] Custom styles
 - [ ] View mode (`z`)
   - [x] `c`
   - [x] `Shift` + `j` or `t`, etc.
   - [x] `j`, etc.
-- [x] Undo/Redo
-- [x] Column/row labels
 - [ ] Mouse cursor/arrow keys/copy,paste and selection support for console field
-- [x] Jump to labeled field with `g` ident `g` (Identifier can be letters, a number or a combination)
-- [x] Special style for cells, that are both yanked and selected
 - [ ] Give cells horizontal and vertical to primary selection some "shade"
-- [x] Unsaved changes recognititon, closable with `q`
-- [x] `w!` and `wq!` to force-write
 - [ ] Maybe variable column width
-- [x] Save separator of read in file. Also have command to show and change the separator
 - [ ] Recognize separator of opened file 
-- [ ] Split window
 - [ ] Mark all labels on rows/cols of selection rectangle
-- [x] Throw errors in command handler instead of printing errors
-- [x] Fix, asking not for saving, when having a new buffer and making changes
+- [ ] visualize git diff
+- [ ] Keybinds help
+  - [ ] shortcut helper menu
 
 ## BACKLOG
 - [ ] Maybe custom keybinds at some point
-- [ ] Keybinds help
 - [ ] File picker
 - [ ] Open multiple files at the same time
+- [ ] Split window
