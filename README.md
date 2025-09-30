@@ -1,6 +1,6 @@
 # ratcsv
 
-Minimalistic CSV Editor which makes use of [Ratatui](https://ratatui.rs).
+Minimalistic, very lightweight CSV Editor which makes use of [Ratatui](https://ratatui.rs).
 
 For now the keybinds are fixed and inspired by the Helix keybinds.
 
